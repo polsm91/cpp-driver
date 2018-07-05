@@ -379,6 +379,27 @@ macro(CassSetCompilerFlags)
     set(CASS_DRIVER_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CASS_DRIVER_CXX_FLAGS} ${WARNING_COMPILER_FLAGS} -Werror")
     set(CASS_TEST_CXX_FLAGS "${CASS_TEST_CXX_FLAGS} ${WARNING_COMPILER_FLAGS}")
     set(CASS_EXAMPLE_C_FLAGS "${CMAKE_C_FLAGS} ${WARNING_COMPILER_FLAGS}")
+  elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Intel")
+    # INTEL specific compiler options
+    # I disabled long-long warning because boost generates about 50 such warnings
+    set(WARNING_COMPILER_FLAGS "-Wall -pedantic -Wextra -Wno-long-long -Wno-unused-parameter -Wno-variadic-macros")
+
+    # OpenSSL is deprecated on later versions of Mac OS X. The long-term solution
+    # is to provide a CommonCryto implementation.
+    if (APPLE AND CASS_USE_OPENSSL)
+      set(CASS_DRIVER_CXX_FLAGS "${CASS_DRIVER_CXX_FLAGS} -Wno-deprecated-declarations")
+      set(CASS_TEST_CXX_FLAGS "${CASS_TEST_CXX_FLAGS} -Wno-deprecated-declarations")
+    endif()
+
+    # Enable C++11 support to use std::atomic
+    if(CASS_USE_STD_ATOMIC)
+      set(CASS_DRIVER_CXX_FLAGS "${CASS_DRIVER_CXX_FLAGS} -std=c++11")
+      set(CASS_TEST_CXX_FLAGS "${CASS_TEST_CXX_FLAGS} -std=c++11")
+    endif()
+    set(CMAKE_CXX_FLAGS "-gcc --std=c++11 -pragma-optimization-level=GCC ${CMAKE_CXX_FLAGS}")
+    set(CASS_DRIVER_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CASS_DRIVER_CXX_FLAGS} ${WARNING_COMPILER_FLAGS} -Werror")
+    set(CASS_TEST_CXX_FLAGS "${CASS_TEST_CXX_FLAGS} ${WARNING_COMPILER_FLAGS}")
+    set(CASS_EXAMPLE_C_FLAGS "${CMAKE_C_FLAGS} ${WARNING_COMPILER_FLAGS}")
   elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
     # Clang/Intel specific compiler options
     # I disabled long-long warning because boost generates about 50 such warnings
