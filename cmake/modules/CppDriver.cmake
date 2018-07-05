@@ -383,7 +383,7 @@ macro(CassSetCompilerFlags)
     # INTEL specific compiler options
     # I disabled long-long warning because boost generates about 50 such warnings
     set(WARNING_COMPILER_FLAGS "-Wall -pedantic -Wextra -Wno-long-long -Wno-unused-parameter -Wno-variadic-macros")
-
+    add_definitions(-D_IntelCXX)
     # OpenSSL is deprecated on later versions of Mac OS X. The long-term solution
     # is to provide a CommonCryto implementation.
     if (APPLE AND CASS_USE_OPENSSL)

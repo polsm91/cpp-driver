@@ -135,12 +135,12 @@ public:
   typedef SharedRefPtr<RefBuffer> Ptr;
 
   static RefBuffer* create(size_t size) {
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(_IntelCXX)
 #pragma warning(push)
 #pragma warning(disable: 4291) //Invalid warning thrown RefBuffer has a delete function
 #endif
     return new (size) RefBuffer();
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(_IntelCXX)
 #pragma warning(pop)
 #endif
   }
