@@ -50,7 +50,12 @@ public:
 
   Decoder decoder() const { return decoder_; }
   ProtocolVersion protocol_version() const { return decoder_.protocol_version(); }
-  int64_t size() const { return (is_null_ ? -1 : decoder_.remaining()); }
+  int64_t size() const { 
+         if (is_null_) return -1;
+         return decoder_.remaining();
+ }
+
+
 
   CassValueType value_type() const {
     if (!data_type_) {
