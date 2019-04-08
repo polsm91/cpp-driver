@@ -4,8 +4,8 @@
 
 Cassandra uses timestamps to serialize write operations. That is, values with a
 more current timestamp are considered to be the most up-to-date version of that
-information. By default, timestamps are assigned by Cassandra on the
-server-side. This behavior can be overridden by configuring the driver to use a
+information. By default, timestamps are assigned by the driver on the
+client-side. This behavior can be overridden by configuring the driver to use a
 timestamp generator or assigning a timestamp directly to a [`CassStatement`] or
 [`CassBatch`].
 
@@ -22,6 +22,8 @@ sessions.
 generator will produce duplicate timestamps.
 
 ```c
+CassCluster* cluster = cass_cluster_new();
+
 CassTimestampGen* timestamp_gen = cass_timestamp_gen_monotonic_new();
 
 cass_cluster_set_timestamp_gen(cluster, timestamp_gen);
@@ -32,6 +34,8 @@ cass_cluster_set_timestamp_gen(cluster, timestamp_gen);
 
 /* Timestamp generators must be freed */
 cass_timestamp_gen_free(timestamp_gen);
+
+cass_cluster_free(cluster);
 ```
 
 All sessions that connect using this cluster object will share this same

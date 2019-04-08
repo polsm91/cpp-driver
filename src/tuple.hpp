@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -17,11 +17,12 @@
 #ifndef __CASS_TUPLE_HPP_INCLUDED__
 #define __CASS_TUPLE_HPP_INCLUDED__
 
+#include "buffer.hpp"
 #include "cassandra.h"
 #include "data_type.hpp"
 #include "encode.hpp"
 #include "external.hpp"
-#include "buffer.hpp"
+#include "memory.hpp"
 #include "ref_counted.hpp"
 #include "types.hpp"
 
@@ -38,7 +39,7 @@ class UserTypeValue;
 class Tuple {
 public:
   explicit Tuple(size_t item_count)
-    : data_type_(new TupleType(false))
+    : data_type_(Memory::allocate<TupleType>(false))
     , items_(item_count) { }
 
   explicit Tuple(const DataType::ConstPtr& data_type)

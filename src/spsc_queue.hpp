@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@
 
   [1]
   http://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue
-
 */
 
 #ifndef __CASS_SPSC_QUEUE_HPP_INCLUDED__
@@ -44,11 +43,9 @@ public:
   SPSCQueue(size_t size)
       : size_(next_pow_2(size))
       , mask_(size_ - 1)
-      , buffer_(new T[size_])
+      , buffer_(size_)
       , tail_(0)
       , head_(0) {}
-
-  ~SPSCQueue() { delete[] buffer_; }
 
   bool enqueue(const T& input) {
     const size_t pos = tail_.load(MEMORY_ORDER_RELAXED);
@@ -92,7 +89,7 @@ private:
   cache_line_pad_t pad0_;
   const size_t size_;
   const size_t mask_;
-  T* const buffer_;
+  DynamicArray<T> buffer_;
 
   cache_line_pad_t pad1_;
   Atomic<size_t> tail_;

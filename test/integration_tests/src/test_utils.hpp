@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -37,6 +37,7 @@
 #include "cassandra.h"
 #include "bridge.hpp"
 #include "constants.hpp"
+#include "pretty_print.hpp"
 
 #ifdef min
 #undef min
@@ -323,6 +324,15 @@ struct Deleter<const CassResult> {
 };
 
 template<>
+struct Deleter<const CassErrorResult> {
+  void operator()(const CassErrorResult* ptr) {
+    if (ptr != NULL) {
+      cass_error_result_free(ptr);
+    }
+  }
+};
+
+template<>
 struct Deleter<CassIterator> {
   void operator()(CassIterator* ptr) {
     if (ptr != NULL) {
@@ -412,6 +422,15 @@ struct Deleter<CassCustomPayload> {
   }
 };
 
+template<>
+struct Deleter<CassRetryPolicy> {
+  void operator()(CassRetryPolicy* ptr) {
+    if (ptr != NULL) {
+      cass_retry_policy_free(ptr);
+    }
+  }
+};
+
 template <class T>
 class CassSharedPtr : public boost::shared_ptr<T> {
 public:
@@ -424,6 +443,7 @@ typedef CassSharedPtr<CassSession> CassSessionPtr;
 typedef CassSharedPtr<CassFuture> CassFuturePtr;
 typedef CassSharedPtr<CassStatement> CassStatementPtr;
 typedef CassSharedPtr<const CassResult> CassResultPtr;
+typedef CassSharedPtr<const CassErrorResult> CassErrorResultPtr;
 typedef CassSharedPtr<CassIterator> CassIteratorPtr;
 typedef CassSharedPtr<CassCollection> CassCollectionPtr;
 typedef CassSharedPtr<CassDataType> CassDataTypePtr;
@@ -434,6 +454,7 @@ typedef CassSharedPtr<CassBatch> CassBatchPtr;
 typedef CassSharedPtr<CassUuidGen> CassUuidGenPtr;
 typedef CassSharedPtr<const CassSchemaMeta> CassSchemaMetaPtr;
 typedef CassSharedPtr<CassCustomPayload> CassCustomPayloadPtr;
+typedef CassSharedPtr<CassRetryPolicy> CassRetryPolicyPtr;
 
 template<class T>
 struct Value;
@@ -671,8 +692,9 @@ struct Value<CassTime> {
 
   static std::string to_string(CassTime value) {
     char temp[32];
-    time_t epoch_secs = static_cast<time_t>(cass_date_time_to_epoch(0, value));
-    strftime(temp, sizeof(temp), "'%H:%M:%S", gmtime(&epoch_secs));
+    time_t epoch_secs = static_cast<time_t>(cass_date_time_to_epoch(2147483648, value));
+    struct tm* time = gmtime(&epoch_secs);
+    strftime(temp, sizeof(temp), "'%H:%M:%S", time);
     std::string str(temp);
     cass_int64_t diff = value - epoch_secs * 1000000000;
     sprintf(temp, "%09u", (unsigned int)diff);
@@ -1173,6 +1195,9 @@ struct MultipleNodesTest {
     unsigned int protocol_version = CASS_HIGHEST_SUPPORTED_PROTOCOL_VERSION, bool with_vnodes = false,
     bool is_ssl = false);
 
+  bool check_version(const std::string& required);
+  bool is_beta_protocol();
+
   virtual ~MultipleNodesTest();
 
   boost::shared_ptr<CCM::Bridge> ccm;
@@ -1329,6 +1354,23 @@ void wait_for_node_connection(const std::string& ip_prefix, int node, int total_
  *                       (default: 10)
  */
 void wait_for_node_connections(const std::string& ip_prefix, std::vector<int> nodes, int total_attempts = 10);
+
+/**
+ * Trim whitespace from the front and back of a string
+ *
+ * @param str The string to trim
+ * @return A reference to the modified string with its whitespace trimmed
+ */
+std::string& trim(std::string& str);
+
+/**
+ * Split a string into pieces using a provided delimiter charactor
+ *
+ * @param str The string to explode
+ * @param vec The result
+ * @param delimiter The character used to divide the string
+ */
+void explode(const std::string& str, std::vector<std::string>& vec, const char delimiter = ',');
 
 extern const char* CREATE_TABLE_ALL_TYPES;
 extern const char* CREATE_TABLE_ALL_TYPES_V4;

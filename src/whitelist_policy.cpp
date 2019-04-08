@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 namespace cass {
 
 bool WhitelistPolicy::is_valid_host(const Host::Ptr& host) const {
-  const std::string& host_address = host->address().to_string(false);
+  const String& host_address = host->address().to_string(false);
   for (ContactPointList::const_iterator it = hosts_.begin(),
                                                 end = hosts_.end();
        it != end; ++it) {

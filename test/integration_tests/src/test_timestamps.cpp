@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -185,7 +185,7 @@ BOOST_AUTO_TEST_CASE(generator)
   CCM::CassVersion version = test_utils::get_version();
   if ((version.major_version >= 2 && version.minor_version >= 1) || version.major_version >= 3) {
     TimestampsTest tester;
-    cass::SharedRefPtr<TestTimestampGenerator> gen(new TestTimestampGenerator(1234));
+    cass::SharedRefPtr<TestTimestampGenerator> gen(cass::Memory::allocate<TestTimestampGenerator>(1234));
 
     cass_cluster_set_timestamp_gen(tester.cluster, CassTimestampGen::to(gen.get()));
     tester.create_session();
@@ -240,10 +240,10 @@ BOOST_AUTO_TEST_CASE(generator)
 }
 
 /**
- * Test the default timestamp generator.
+ * Test the server-side generator.
  *
- * Verifies that the timestamp is set by the server when no timestamp
- * generator is set and the timestamp is not set directly on the statement.
+ * Verifies that the timestamp is set by the server when using the server-side
+ * generator and the timestamp is not set directly on the statement.
  *
  * @since 2.1.0
  * @jira_ticket CPP-266
@@ -255,6 +255,9 @@ BOOST_AUTO_TEST_CASE(server_side)
   CCM::CassVersion version = test_utils::get_version();
   if ((version.major_version >= 2 && version.minor_version >= 1) || version.major_version >= 3) {
     TimestampsTest tester;
+    CassTimestampGen* gen = cass_timestamp_gen_server_side_new();
+    cass_cluster_set_timestamp_gen(tester.cluster, gen);
+    cass_timestamp_gen_free(gen);
     tester.create_session();
     // Server-side is the default timestamp generator
     std::string table_name("table_" + test_utils::generate_unique_str(tester.uuid_gen));
@@ -291,7 +294,7 @@ BOOST_AUTO_TEST_CASE(server_side)
 BOOST_AUTO_TEST_CASE(monotonic_generator)
 {
   TimestampsTest tester;
-  cass::SharedRefPtr<TestMonotonicTimestampGenerator> gen(new TestMonotonicTimestampGenerator()); // mimics cass_timestamp_gen_monotonic_new())
+  cass::SharedRefPtr<TestMonotonicTimestampGenerator> gen(cass::Memory::allocate<TestMonotonicTimestampGenerator>()); // mimics cass_timestamp_gen_monotonic_new())
   cass_cluster_set_timestamp_gen(tester.cluster, CassTimestampGen::to(gen.get()));
   tester.create_session();
 
@@ -328,7 +331,7 @@ BOOST_AUTO_TEST_CASE(monotonic_generator)
 BOOST_AUTO_TEST_CASE(monotonic_generator_warnings)
 {
   TimestampsTest tester;
-  cass::SharedRefPtr<TestMonotonicTimestampGenerator> gen(new TestMonotonicTimestampGenerator(1, 1000)); // mimics cass_timestamp_gen_monotonic_new_with_settings())
+  cass::SharedRefPtr<TestMonotonicTimestampGenerator> gen(cass::Memory::allocate<TestMonotonicTimestampGenerator>(1, 1000)); // mimics cass_timestamp_gen_monotonic_new_with_settings())
   cass_cluster_set_timestamp_gen(tester.cluster, CassTimestampGen::to(gen.get()));
   tester.create_session();
 

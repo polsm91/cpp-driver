@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -18,6 +18,8 @@
 #define __CASS_MACROS_HPP_INCLUDED__
 
 #include <stddef.h>
+
+#define SAFE_STRLEN(s) ((s) ? strlen(s) : 0)
 
 #define DISALLOW_COPY_AND_ASSIGN(TypeName) \
   TypeName(const TypeName&);               \
@@ -76,5 +78,8 @@ template <size_t N>
 struct StaticNextPow2 {
   enum { value = StaticNextPow2Helper<8 * sizeof(size_t) - 1, N>::value };
 };
+
+#define STRINGIFY_HELPER(s) #s
+#define STRINGIFY(s) STRINGIFY_HELPER(s)
 
 #endif

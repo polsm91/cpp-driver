@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -24,33 +24,39 @@
 #include "host.hpp"
 #include "load_balancing.hpp"
 #include "metadata.hpp"
+#include "prepare_request.hpp"
 #include "request.hpp"
 #include "response.hpp"
+#include "result_response.hpp"
 #include "retry_policy.hpp"
 #include "scoped_ptr.hpp"
 #include "small_vector.hpp"
 #include "speculative_execution.hpp"
+#include "string.hpp"
+#include "timestamp_generator.hpp"
 
-#include <string>
 #include <uv.h>
 
 namespace cass {
 
+class Config;
 class Connection;
-class IOWorker;
+class ConnectionPoolManager;
 class Pool;
+class ExecutionProfile;
 class Timer;
+class TokenMap;
 
 class ResponseFuture : public Future {
 public:
   typedef SharedRefPtr<ResponseFuture> Ptr;
 
   ResponseFuture()
-      : Future(CASS_FUTURE_TYPE_RESPONSE) { }
+    : Future(FUTURE_TYPE_RESPONSE) { }
 
   ResponseFuture(const Metadata::SchemaSnapshot& schema_metadata)
-      : Future(CASS_FUTURE_TYPE_RESPONSE)
-      , schema_metadata(new Metadata::SchemaSnapshot(schema_metadata)) { }
+    : Future(FUTURE_TYPE_RESPONSE)
+    , schema_metadata(Memory::allocate<Metadata::SchemaSnapshot>(schema_metadata)) { }
 
   bool set_response(Address address, const Response::Ptr& response) {
     ScopedMutex lock(&mutex_);
@@ -69,7 +75,7 @@ public:
     return response_;
   }
 
-  bool set_error_with_address(Address address, CassError code, const std::string& message) {
+  bool set_error_with_address(Address address, CassError code, const String& message) {
     ScopedMutex lock(&mutex_);
     if (!is_set()) {
       address_ = address;
@@ -80,7 +86,7 @@ public:
   }
 
   bool set_error_with_response(Address address, const Response::Ptr& response,
-                               CassError code, const std::string& message) {
+                               CassError code, const String& message) {
     ScopedMutex lock(&mutex_);
     if (!is_set()) {
       address_ = address;
@@ -104,7 +110,7 @@ public:
     return attempted_addresses_;
   }
 
-  std::string statement;
+  PrepareRequest::ConstPtr prepare_request;
   ScopedPtr<Metadata::SchemaSnapshot> schema_metadata;
 
 private:
@@ -121,162 +127,207 @@ private:
   AddressVec attempted_addresses_;
 };
 
-class SpeculativeExecution;
+class RequestExecution;
+class RequestListener;
 
 class RequestHandler : public RefCounted<RequestHandler> {
+  friend class Memory;
+
 public:
   typedef SharedRefPtr<RequestHandler> Ptr;
 
   RequestHandler(const Request::ConstPtr& request,
                  const ResponseFuture::Ptr& future,
-                 RetryPolicy* retry_policy)
-    : request_(request)
-    , timestamp_(request->timestamp())
-    , future_(future)
-    , retry_policy_(retry_policy)
-    , io_worker_(NULL)
-    , running_executions_(0)
-    , start_time_ns_(uv_hrtime()) { }
+                 Metrics* metrics = NULL,
+                 const Address* preferred_address = NULL);
 
-  const Request* request() const { return request_.get(); }
+  void set_prepared_metadata(const PreparedMetadata::Entry::Ptr& entry);
 
-  int64_t timestamp() const { return timestamp_; }
-  void set_timestamp(int64_t timestamp) { timestamp_ = timestamp; }
+  void init(const ExecutionProfile& profile,
+            ConnectionPoolManager* manager,
+            const TokenMap* token_map,
+            TimestampGenerator* timestamp_generator,
+            RequestListener* listener);
 
-  Request::EncodingCache* encoding_cache() { return &encoding_cache_; }
+  void execute();
 
-  RetryPolicy* retry_policy() { return retry_policy_; }
+  const RequestWrapper& wrapper() const { return wrapper_; }
+  const Request* request() const { return wrapper_.request().get(); }
+  CassConsistency consistency() const { return wrapper_.consistency(); }
+  const Address& preferred_address() const { return preferred_address_; }
 
-  const Address& preferred_address() const {
-    return preferred_address_;
-  }
+public:
+  class Protected {
+    friend class RequestExecution;
+    Protected() { }
+    Protected(Protected const&) { }
+  };
 
-  void set_preferred_address(const Address& preferred_address) {
-    preferred_address_ = preferred_address;
-  }
+  void retry(RequestExecution* request_execution, Protected);
 
-  void set_query_plan(QueryPlan* query_plan) { query_plan_.reset(query_plan); }
+  Host::Ptr next_host(Protected);
+  int64_t next_execution(const Host::Ptr& current_host, Protected);
 
-  void set_execution_plan(SpeculativeExecutionPlan* execution_plan) {
-    execution_plan_.reset(execution_plan);
-  }
+  void start_request(uv_loop_t* loop, Protected);
 
-  const Host::Ptr& current_host() const { return current_host_; }
-  const Host::Ptr& next_host() {
-    current_host_ = query_plan_->compute_next();
-    return current_host_;
-  }
+  void add_attempted_address(const Address& address, Protected);
 
-  IOWorker* io_worker() { return io_worker_; }
+  void notify_result_metadata_changed(const String& prepared_id,
+                                      const String& query,
+                                      const String& keyspace,
+                                      const String& result_metadata_id,
+                                      const ResultResponse::ConstPtr& result_response, Protected);
 
-  void start_request(IOWorker* io_worker);
+  void notify_keyspace_changed(const String& keyspace,
+                               const Host::Ptr& current_host,
+                               const Response::Ptr& response);
+
+  bool wait_for_tracing_data(const Host::Ptr& current_host,
+                             const Response::Ptr& response);
+  bool wait_for_schema_agreement(const Host::Ptr& current_host,
+                                 const Response::Ptr& response);
+
+  bool prepare_all(const Host::Ptr& current_host,
+                   const Response::Ptr& response);
 
   void set_response(const Host::Ptr& host,
                     const Response::Ptr& response);
-  void set_error(CassError code, const std::string& message);
+  void set_error(CassError code, const String& message);
   void set_error(const Host::Ptr& host,
-                 CassError code, const std::string& message);
+                 CassError code, const String& message);
   void set_error_with_error_response(const Host::Ptr& host,
                                      const Response::Ptr& error,
-                                     CassError code, const std::string& message);
+                                     CassError code, const String& message);
+
+  void stop_timer();
 
 private:
-  static void on_timeout(Timer* timer);
+  void on_timeout(Timer* timer);
 
 private:
-  friend class SpeculativeExecution;
-
-  void add_execution(SpeculativeExecution* speculative_execution);
-  void add_attempted_address(const Address& address);
-  void schedule_next_execution(const Host::Ptr& current_host);
-
-  // This MUST only be called once and that's currently guaranteed by the
-  // response future.
   void stop_request();
+  void internal_retry(RequestExecution* request_execution);
 
 private:
-  typedef SmallVector<SpeculativeExecution*, 4> SpeculativeExecutionVec;
-
-  const Request::ConstPtr request_;
-  int64_t timestamp_;
+  RequestWrapper wrapper_;
   SharedRefPtr<ResponseFuture> future_;
-  RetryPolicy* retry_policy_;
+
+  bool is_done_;
+  int running_executions_;
+
   ScopedPtr<QueryPlan> query_plan_;
   ScopedPtr<SpeculativeExecutionPlan> execution_plan_;
-  Host::Ptr current_host_;
-  IOWorker* io_worker_;
   Timer timer_;
-  int running_executions_;
-  SpeculativeExecutionVec speculative_executions_;
-  Request::EncodingCache encoding_cache_;
-  uint64_t start_time_ns_;
-  Address preferred_address_;
+
+  const uint64_t start_time_ns_;
+  RequestListener* listener_;
+  ConnectionPoolManager* manager_;
+
+  Metrics* const metrics_;
+  const Address preferred_address_;
 };
 
-class SpeculativeExecution : public RequestCallback {
+class KeyspaceChangedResponse {
 public:
-  typedef SharedRefPtr<SpeculativeExecution> Ptr;
+  KeyspaceChangedResponse(const RequestHandler::Ptr& request_handler,
+                          const Host::Ptr& current_host,
+                          const Response::Ptr& response)
+    : request_handler_(request_handler)
+    , current_host_(current_host)
+    , response_(response) { }
 
-  SpeculativeExecution(const RequestHandler::Ptr& request_handler,
-                       const Host::Ptr& current_host = Host::Ptr());
-
-  virtual const Request* request() const { return request_handler_->request(); }
-  virtual int64_t timestamp() const { return request_handler_->timestamp(); }
-  virtual Request::EncodingCache* encoding_cache() { return request_handler_->encoding_cache(); }
-
-  Pool* pool() const { return pool_; }
-  void set_pool(Pool* pool) { pool_ = pool; }
-
-  const Host::Ptr& current_host() const { return current_host_; }
-  void next_host() { current_host_ = request_handler_->next_host(); }
-
-  void retry_current_host();
-  void retry_next_host();
-
-  void start_pending_request(Pool* pool, Timer::Callback cb);
-  void stop_pending_request();
-
-  void execute();
-  void schedule_next(int64_t timeout = 0);
-  void cancel();
-
-  virtual void on_error(CassError code, const std::string& message);
-
-private:
-  static void on_execute(Timer* timer);
-
-  virtual void on_start();
-
-  virtual void on_retry(bool use_next_host);
-
-  virtual void on_set(ResponseMessage* response);
-  virtual void on_cancel();
-
-  void on_result_response(ResponseMessage* response);
-  void on_error_response(ResponseMessage* response);
-  void on_error_unprepared(ErrorResponse* error);
-
-  void return_connection();
-
-private:
-  friend class SchemaChangeCallback;
-
-  bool is_host_up(const Address& address) const;
-
-  void set_response(const Response::Ptr& response);
-  void set_error(CassError code, const std::string& message);
-  void set_error_with_error_response(const Response::Ptr& error,
-                                     CassError code, const std::string& message);
+  void set_response() {
+    request_handler_->set_response(current_host_, response_);
+  }
 
 private:
   RequestHandler::Ptr request_handler_;
   Host::Ptr current_host_;
-  Pool* pool_;
+  Response::Ptr response_;
+};
+
+class PreparedMetadataListener {
+public:
+  virtual ~PreparedMetadataListener() { }
+
+  virtual void on_prepared_metadata_changed(const String& id,
+                                            const PreparedMetadata::Entry::Ptr& entry) = 0;
+};
+
+class RequestListener : public PreparedMetadataListener {
+public:
+  virtual ~RequestListener() { }
+
+  /**
+   * A callback called when the keyspace has changed.
+   *
+   * @param keyspace The new keyspace.
+   * @param response The response for the keyspace change. `set_response()`
+   * must be called when the callback is done processing the keyspace change.
+   */
+  virtual void on_keyspace_changed(const String& keyspace,
+                                   KeyspaceChangedResponse response) = 0;
+
+  virtual bool on_wait_for_tracing_data(const RequestHandler::Ptr& request_handler,
+                                        const Host::Ptr& current_host,
+                                        const Response::Ptr& response) = 0;
+
+  virtual bool on_wait_for_schema_agreement(const RequestHandler::Ptr& request_handler,
+                                            const Host::Ptr& current_host,
+                                            const Response::Ptr& response) = 0;
+
+  virtual bool on_prepare_all(const RequestHandler::Ptr& request_handler,
+                              const Host::Ptr& current_host,
+                              const Response::Ptr& response) = 0;
+
+  virtual void on_done() = 0;
+};
+
+class RequestExecution : public RequestCallback {
+public:
+  typedef SharedRefPtr<RequestExecution> Ptr;
+
+  RequestExecution(RequestHandler* request_handler);
+
+  const Host::Ptr& current_host() const { return current_host_; }
+  void next_host() {
+    current_host_ = request_handler_->next_host(RequestHandler::Protected());
+  }
+
+  void notify_result_metadata_changed(const Request *request,
+                                      ResultResponse* result_response);
+
+  virtual void on_retry_current_host();
+  virtual void on_retry_next_host();
+
+private:
+  void on_execute_next(Timer* timer);
+
+  void retry_current_host();
+  void retry_next_host();
+
+  virtual void on_write(Connection* connection);
+
+  virtual void on_set(ResponseMessage* response);
+  virtual void on_error(CassError code, const String& message);
+
+  void on_result_response(Connection* connection, ResponseMessage* response);
+  void on_error_response(Connection* connection, ResponseMessage* response);
+  void on_error_unprepared(Connection* connection, ErrorResponse* error);
+
+private:
+  void set_response(const Response::Ptr& response);
+  void set_error(CassError code, const String& message);
+  void set_error_with_error_response(const Response::Ptr& error,
+                                     CassError code, const String& message);
+
+private:
+  RequestHandler::Ptr request_handler_;
+  Host::Ptr current_host_;
   Connection* connection_;
   Timer schedule_timer_;
-  Timer pending_request_timer_;
   int num_retries_;
-  uint64_t start_time_ns_;
+  const uint64_t start_time_ns_;
 };
 
 } // namespace cass

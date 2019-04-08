@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -20,13 +20,12 @@
 #include "cassandra.h"
 #include "constants.hpp"
 #include "external.hpp"
+#include "map.hpp"
 #include "request.hpp"
 #include "ref_counted.hpp"
 #include "statement.hpp"
-
-#include <map>
-#include <string>
-#include <vector>
+#include "string.hpp"
+#include "vector.hpp"
 
 namespace cass {
 
@@ -34,7 +33,7 @@ class ExecuteRequest;
 
 class BatchRequest : public RoutableRequest {
 public:
-  typedef std::vector<Statement::Ptr> StatementList;
+  typedef Vector<Statement::Ptr> StatementVec;
 
   BatchRequest(uint8_t type_)
       : RoutableRequest(CQL_OPCODE_BATCH)
@@ -42,23 +41,20 @@ public:
 
   uint8_t type() const { return type_; }
 
-  const StatementList& statements() const { return statements_; }
+  const StatementVec& statements() const { return statements_; }
 
   void add_statement(Statement* statement);
 
-  bool prepared_statement(const std::string& id, std::string* statement) const;
+  bool find_prepared_query(const String& id, String* query) const;
 
-  virtual bool get_routing_key(std::string* routing_key, EncodingCache* cache) const;
-
-private:
-  int encode(int version, RequestCallback* callback, BufferVec* bufs) const;
+  virtual bool get_routing_key(String* routing_key) const;
 
 private:
-  typedef std::map<std::string, ExecuteRequest*> PreparedMap;
+  int encode(ProtocolVersion version, RequestCallback* callback, BufferVec* bufs) const;
 
+private:
   uint8_t type_;
-  StatementList statements_;
-  PreparedMap prepared_statements_;
+  StatementVec statements_;
 };
 
 } // namespace cass

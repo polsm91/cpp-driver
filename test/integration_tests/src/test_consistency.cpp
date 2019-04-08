@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -114,7 +114,7 @@ BOOST_AUTO_TEST_CASE(one_node_down)
     BOOST_CHECK_EQUAL(query_result, CASS_OK);
   }
 
-  ccm->decommission_node(2);
+  ccm->force_decommission_node(2);
 
   {
     CassError init_result  = policy_tool.init_return_error(session.get(),  12, CASS_CONSISTENCY_ONE);	// Should work (N=2, RF=3)
@@ -131,8 +131,8 @@ BOOST_AUTO_TEST_CASE(one_node_down)
   {
     CassError init_result  = policy_tool.init_return_error(session.get(),  12, CASS_CONSISTENCY_ALL);	// Should fail (N=2, RF=3)
     CassError query_result = policy_tool.query_return_error(session.get(), 12, CASS_CONSISTENCY_ALL);	// Should fail (N=2, RF=3)
-    BOOST_CHECK(init_result  != CASS_OK);
-    BOOST_CHECK(query_result != CASS_OK);
+    BOOST_CHECK_NE(init_result, CASS_OK);
+    BOOST_CHECK_NE(query_result, CASS_OK);
   }
   {
     CassError init_result  = policy_tool.init_return_error(session.get(),  12, CASS_CONSISTENCY_QUORUM);	// Should work (N=2, RF=3, quorum=2)
@@ -168,8 +168,8 @@ BOOST_AUTO_TEST_CASE(two_nodes_down)
     BOOST_CHECK_EQUAL(query_result, CASS_OK);
   }
 
-  ccm->decommission_node(2);
-  ccm->decommission_node(3);
+  ccm->force_decommission_node(2);
+  ccm->force_decommission_node(3);
 
   {
     CassError init_result  = policy_tool.init_return_error(session.get(),  12, CASS_CONSISTENCY_ONE);	// Should work (N=1, RF=3)

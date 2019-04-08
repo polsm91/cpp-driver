@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -17,13 +17,19 @@
 #ifndef __CASS_PREPARED_HPP_INCLUDED__
 #define __CASS_PREPARED_HPP_INCLUDED__
 
+#include "buffer.hpp"
 #include "external.hpp"
+#include "prepare_request.hpp"
 #include "ref_counted.hpp"
+#include "request.hpp"
 #include "result_response.hpp"
 #include "metadata.hpp"
+#include "scoped_lock.hpp"
 #include "scoped_ptr.hpp"
+#include "string.hpp"
+#include "dense_hash_map.hpp"
 
-#include <string>
+#include <uv.h>
 
 namespace cass {
 
@@ -32,19 +38,96 @@ public:
   typedef SharedRefPtr<const Prepared> ConstPtr;
 
   Prepared(const ResultResponse::Ptr& result,
-           const std::string& statement,
+           const PrepareRequest::ConstPtr& prepare_request,
            const Metadata::SchemaSnapshot& schema_metadata);
 
   const ResultResponse::ConstPtr& result() const { return result_; }
-  const std::string& id() const { return id_; }
-  const std::string& statement() const { return statement_; }
+  const String& id() const { return id_; }
+  const String& query() const { return query_; }
+  const String& keyspace() const { return keyspace_; }
+  const RequestSettings& request_settings() const { return request_settings_; }
   const ResultResponse::PKIndexVec& key_indices() const { return key_indices_; }
 
 private:
   ResultResponse::ConstPtr result_;
-  std::string id_;
-  std::string statement_;
+  String id_;
+  String query_;
+  String keyspace_;
+  RequestSettings request_settings_;
   ResultResponse::PKIndexVec key_indices_;
+};
+
+class PreparedMetadata {
+public:
+  class Entry : public RefCounted<Entry> {
+  public:
+    typedef SharedRefPtr<const Entry> Ptr;
+    typedef Vector<Ptr> Vec;
+
+    Entry(const String& query,
+          const String& keyspace,
+          const String& result_metadata_id,
+          const ResultResponse::ConstPtr& result)
+      : query_(query)
+      , keyspace_(keyspace)
+      , result_metadata_id_(sizeof(uint16_t) + result_metadata_id.size())
+      , result_(result) {
+      result_metadata_id_.encode_string(0,
+                                        result_metadata_id.data(),
+                                        result_metadata_id.size());
+    }
+
+    const String& query() const { return query_; }
+    const String& keyspace() const { return keyspace_; }
+    const Buffer& result_metadata_id() const { return result_metadata_id_; }
+    const ResultResponse::ConstPtr& result() const { return result_; }
+
+  private:
+    String query_;
+    String keyspace_;
+    Buffer result_metadata_id_;
+    ResultResponse::ConstPtr result_;
+  };
+
+  PreparedMetadata() {
+    metadata_.set_empty_key(String());
+    uv_rwlock_init(&rwlock_);
+  }
+
+  ~PreparedMetadata() {
+    uv_rwlock_destroy(&rwlock_);
+  }
+
+   Entry::Ptr get(const String& prepared_id) const {
+    ScopedReadLock rl(&rwlock_);
+    Map::const_iterator i = metadata_.find(prepared_id);
+    if (i != metadata_.end()) {
+      return i->second;
+    }
+    return Entry::Ptr();
+  }
+
+  void set(const String& prepared_id, const PreparedMetadata::Entry::Ptr& entry) {
+    ScopedWriteLock wl(&rwlock_);
+    metadata_[prepared_id] = entry;
+  }
+
+  Entry::Vec copy() const {
+    ScopedReadLock rl(&rwlock_);
+    Entry::Vec temp;
+    temp.reserve(metadata_.size());
+    for (Map::const_iterator it = metadata_.begin(),
+         end = metadata_.end(); it != end; ++it) {
+      temp.push_back(it->second);
+    }
+    return temp;
+  }
+
+private:
+  typedef DenseHashMap<String, Entry::Ptr> Map;
+
+  mutable uv_rwlock_t rwlock_;
+  Map metadata_;
 };
 
 } // namespace cass

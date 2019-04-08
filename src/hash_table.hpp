@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ struct HashTableEntry {
     : index(0)
     , next(NULL) { }
 
-  // Requires a "name" std::string or cass::StringRef field
+  // Requires a "name" String or cass::StringRef field
   size_t index;
   T* next;
 };
@@ -93,6 +93,10 @@ template<class T>
 size_t CaseInsensitiveHashTable<T>::get_indices(StringRef name, IndexVec* result) const {
   result->clear();
   bool is_case_sensitive = false;
+
+  if (!name.data()) {
+    return 0;
+  }
 
   if (name.size() > 0 && name.front() == '"' && name.back() == '"') {
     is_case_sensitive = true;

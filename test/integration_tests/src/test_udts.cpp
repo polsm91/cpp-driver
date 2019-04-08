@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -39,6 +39,11 @@ private:
   test_utils::CassSchemaMetaPtr schema_meta_;
 
   /**
+   * Test keyspace
+   */
+  std::string keyspace_;
+
+  /**
    * Update the session schema metadata
    */
   void update_schema() {
@@ -56,7 +61,7 @@ private:
     const CassDataType* datatype = NULL;
     while (udt_field_names.empty() && ++count <= 10) {
       update_schema();
-      const CassKeyspaceMeta* keyspace_meta = cass_schema_meta_keyspace_by_name(schema_meta_.get(), test_utils::SIMPLE_KEYSPACE.c_str());
+      const CassKeyspaceMeta* keyspace_meta = cass_schema_meta_keyspace_by_name(schema_meta_.get(), keyspace_.c_str());
       BOOST_REQUIRE(keyspace_meta != NULL);
       datatype = cass_keyspace_meta_user_type_by_name(keyspace_meta, udt_name.c_str());
       if (datatype == NULL) {
@@ -67,16 +72,19 @@ private:
   }
 
 public:
-  UDTTests() : test_utils::SingleSessionTest(1, 0), schema_meta_(NULL) {
-    test_utils::execute_query(session, str(boost::format(test_utils::CREATE_KEYSPACE_SIMPLE_FORMAT) % test_utils::SIMPLE_KEYSPACE % "1"));
-    test_utils::execute_query(session, str(boost::format("USE %s") % test_utils::SIMPLE_KEYSPACE));
+  UDTTests()
+    : test_utils::SingleSessionTest(1, 0)
+    , schema_meta_(NULL)
+    , keyspace_(str(boost::format("ks_%s") % test_utils::generate_unique_str(uuid_gen))) {
+    test_utils::execute_query(session, str(boost::format(test_utils::CREATE_KEYSPACE_SIMPLE_FORMAT) % keyspace_ % "1"));
+    test_utils::execute_query(session, str(boost::format("USE %s") % keyspace_));
   }
 
   ~UDTTests() {
     // Drop the keyspace (ignore any and all errors)
     test_utils::execute_query_with_error(session,
       str(boost::format(test_utils::DROP_KEYSPACE_FORMAT)
-      % test_utils::SIMPLE_KEYSPACE));
+      % keyspace_));
   }
 
   /**
@@ -97,7 +105,7 @@ public:
    */
   test_utils::CassUserTypePtr new_udt(const std::string &udt_name) {
     verify_user_type(udt_name);
-    const CassKeyspaceMeta* keyspace_meta = cass_schema_meta_keyspace_by_name(schema_meta_.get(), test_utils::SIMPLE_KEYSPACE.c_str());
+    const CassKeyspaceMeta* keyspace_meta = cass_schema_meta_keyspace_by_name(schema_meta_.get(), keyspace_.c_str());
     BOOST_REQUIRE(keyspace_meta != NULL);
     const CassDataType* datatype = cass_keyspace_meta_user_type_by_name(keyspace_meta, udt_name.c_str());
     BOOST_REQUIRE(datatype != NULL);
@@ -419,8 +427,12 @@ BOOST_AUTO_TEST_CASE(invalid) {
       test_utils::CassStatementPtr statement(cass_statement_new(insert_query.c_str(), 2));
       BOOST_REQUIRE_EQUAL(cass_statement_bind_uuid(statement.get(), 0, key), CASS_OK);
       BOOST_REQUIRE_EQUAL(cass_statement_bind_user_type(statement.get(), 1, phone.get()), CASS_OK);
+      CassError expected_error = CASS_ERROR_SERVER_INVALID_QUERY;
+      if (version >= "3.11.0") {
+        expected_error = CASS_ERROR_SERVER_SERVER_ERROR;
+      }
       BOOST_REQUIRE_EQUAL(test_utils::wait_and_return_error(test_utils::CassFuturePtr(cass_session_execute(tester.session, statement.get())).get()),
-                          CASS_ERROR_SERVER_INVALID_QUERY);
+                          expected_error);
     }
   } else {
     std::cout << "Unsupported Test for Cassandra v" << version.to_string() << ": Skipping udts/invalid" << std::endl;

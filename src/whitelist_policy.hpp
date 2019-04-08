@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ public:
   virtual ~WhitelistPolicy() {}
 
   WhitelistPolicy* new_instance() {
-    return new WhitelistPolicy(child_policy_->new_instance(), hosts_);
+    return Memory::allocate<WhitelistPolicy>(child_policy_->new_instance(), hosts_);
   }
 
 private:

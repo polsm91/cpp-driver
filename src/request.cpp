@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -21,17 +21,16 @@
 extern "C" {
 
 CassCustomPayload* cass_custom_payload_new() {
-  cass::CustomPayload* payload = new cass::CustomPayload();
+  cass::CustomPayload* payload = cass::Memory::allocate<cass::CustomPayload>();
   payload->inc_ref();
   return CassCustomPayload::to(payload);
 }
-
 
 void cass_custom_payload_set(CassCustomPayload* payload,
                                 const char* name,
                                 const cass_byte_t* value,
                                 size_t value_size) {
-  payload->set(name, strlen(name), value, value_size);
+  payload->set(name, SAFE_STRLEN(name), value, value_size);
 }
 
 void cass_custom_payload_set_n(CassCustomPayload* payload,
@@ -44,7 +43,7 @@ void cass_custom_payload_set_n(CassCustomPayload* payload,
 
 void cass_custom_payload_remove(CassCustomPayload* payload,
                                 const char* name) {
-  payload->remove(name, strlen(name));
+  payload->remove(name, SAFE_STRLEN(name));
 }
 
 void cass_custom_payload_remove_n(CassCustomPayload* payload,
@@ -65,14 +64,11 @@ void CustomPayload::set(const char* name, size_t name_length, const uint8_t* val
   Buffer buf(sizeof(uint16_t) + name_length + sizeof(int32_t) + value_size);
   size_t pos = buf.encode_string(0, name, name_length);
   buf.encode_bytes(pos, reinterpret_cast<const char*>(value), value_size);
-  items_[std::string(name, name_length)] = buf;
+  items_[String(name, name_length)] = buf;
 }
 
 int32_t CustomPayload::encode(BufferVec* bufs) const {
-  int32_t length = sizeof(uint16_t);
-  Buffer buf(sizeof(uint16_t));
-  buf.encode_uint16(0, items_.size());
-  bufs->push_back(buf);
+  int32_t length = 0;
   for (ItemMap::const_iterator i = items_.begin(), end = items_.end();
        i != end;
        ++i) {
@@ -81,14 +77,6 @@ int32_t CustomPayload::encode(BufferVec* bufs) const {
     bufs->push_back(buf);
   }
   return length;
-}
-
-uint64_t Request::request_timeout_ms(uint64_t default_timeout_ms) const {
-  uint64_t request_timeout_ms = request_timeout_ms_;
-  if (request_timeout_ms == CASS_UINT64_MAX) {
-    return default_timeout_ms;
-  }
-  return request_timeout_ms;
 }
 
 } // namespace cass

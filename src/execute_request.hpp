@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -17,34 +17,25 @@
 #ifndef __CASS_EXECUTE_REQUEST_HPP_INCLUDED__
 #define __CASS_EXECUTE_REQUEST_HPP_INCLUDED__
 
-#include <string>
-#include <vector>
-
 #include "statement.hpp"
 #include "constants.hpp"
 #include "prepared.hpp"
 #include "ref_counted.hpp"
+#include "string.hpp"
+#include "vector.hpp"
 
 namespace cass {
 
 class ExecuteRequest : public Statement {
 public:
-  ExecuteRequest(const Prepared* prepared)
-      : Statement(prepared)
-      , prepared_(prepared) {
-      // If the prepared statement has result metadata then there is no
-      // need to get the metadata with this request too.
-      if (prepared->result()->result_metadata()) {
-        set_skip_metadata(true);
-      }
-  }
+  ExecuteRequest(const Prepared* prepared);
 
   const Prepared::ConstPtr& prepared() const { return prepared_; }
 
-  virtual int encode(int version, RequestCallback* callback, BufferVec* bufs) const;
+  virtual int encode(ProtocolVersion version, RequestCallback* callback, BufferVec* bufs) const;
 
-  bool get_routing_key(std::string* routing_key, EncodingCache* cache)  const {
-    return calculate_routing_key(prepared_->key_indices(), routing_key, cache);
+  bool get_routing_key(String* routing_key)  const {
+    return calculate_routing_key(prepared_->key_indices(), routing_key);
   }
 
 private:

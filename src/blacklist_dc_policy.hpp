@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ public:
   virtual ~BlacklistDCPolicy() {}
 
   BlacklistDCPolicy* new_instance() {
-    return new BlacklistDCPolicy(child_policy_->new_instance(), dcs_);
+    return Memory::allocate<BlacklistDCPolicy>(child_policy_->new_instance(), dcs_);
   }
 
 private:

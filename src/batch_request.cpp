@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 #include "constants.hpp"
 #include "execute_request.hpp"
 #include "external.hpp"
+#include "protocol.hpp"
 #include "request_callback.hpp"
 #include "serialization.hpp"
 #include "statement.hpp"
@@ -26,7 +27,7 @@
 extern "C" {
 
 CassBatch* cass_batch_new(CassBatchType type) {
-  cass::BatchRequest* batch = new cass::BatchRequest(type);
+  cass::BatchRequest* batch = cass::Memory::allocate<cass::BatchRequest>(type);
   batch->inc_ref();
   return CassBatch::to(batch);
 }
@@ -35,8 +36,19 @@ void cass_batch_free(CassBatch* batch) {
   batch->dec_ref();
 }
 
+CassError cass_batch_set_keyspace(CassBatch* batch, const char* keyspace) {
+  return cass_batch_set_keyspace_n(batch, keyspace, SAFE_STRLEN(keyspace));
+}
+
+CassError cass_batch_set_keyspace_n(CassBatch* batch,
+                                    const char* keyspace,
+                                    size_t keyspace_length) {
+  batch->set_keyspace(cass::String(keyspace, keyspace_length));
+  return CASS_OK;
+}
+
 CassError cass_batch_set_consistency(CassBatch* batch,
-                                CassConsistency consistency) {
+                                     CassConsistency consistency) {
   batch->set_consistency(consistency);
   return CASS_OK;
 }
@@ -77,8 +89,32 @@ CassError cass_batch_set_custom_payload(CassBatch* batch,
   return CASS_OK;
 }
 
+CassError cass_batch_set_tracing(CassBatch* batch,
+                                 cass_bool_t enabled) {
+  batch->set_tracing(enabled == cass_true);
+  return CASS_OK;
+}
+
 CassError cass_batch_add_statement(CassBatch* batch, CassStatement* statement) {
   batch->add_statement(statement);
+  return CASS_OK;
+}
+
+CassError cass_batch_set_execution_profile(CassBatch* batch,
+                                           const char* name) {
+  return cass_batch_set_execution_profile_n(batch,
+                                            name,
+                                            SAFE_STRLEN(name));
+}
+
+CassError cass_batch_set_execution_profile_n(CassBatch* batch,
+                                             const char* name,
+                                             size_t name_length) {
+  if (name_length > 0) {
+    batch->set_execution_profile_name(cass::String(name, name_length));
+  } else {
+    batch->set_execution_profile_name(cass::String());
+  }
   return CASS_OK;
 }
 
@@ -96,13 +132,9 @@ namespace cass {
 // <flags> is a [byte] (or [int] for protocol v5)
 // <serial_consistency> is a [short]
 // <timestamp> is a [long]
-int BatchRequest::encode(int version, RequestCallback* callback, BufferVec* bufs) const {
+int BatchRequest::encode(ProtocolVersion version, RequestCallback* callback, BufferVec* bufs) const {
   int length = 0;
   uint32_t flags = 0;
-
-  if (version == 1) {
-    return REQUEST_ERROR_UNSUPPORTED_PROTOCOL;
-  }
 
   {
     // <type> [byte] + <n> [short]
@@ -117,7 +149,7 @@ int BatchRequest::encode(int version, RequestCallback* callback, BufferVec* bufs
     length += buf_size;
   }
 
-  for (BatchRequest::StatementList::const_iterator i = statements_.begin(),
+  for (BatchRequest::StatementVec::const_iterator i = statements_.begin(),
        end = statements_.end(); i != end; ++i) {
     const Statement::Ptr& statement(*i);
     if (statement->has_names_for_values()) {
@@ -135,42 +167,48 @@ int BatchRequest::encode(int version, RequestCallback* callback, BufferVec* bufs
   {
     // <consistency> [short]
     size_t buf_size = sizeof(uint16_t);
-    if (version >= 3) {
-      // <flags>[<serial_consistency><timestamp>]
-      if (version >= 5) {
-        buf_size += sizeof(int32_t); // [int]
-      } else {
-        buf_size += sizeof(uint8_t); // [byte]
-      }
 
-      if (serial_consistency() != 0) {
-        buf_size += sizeof(uint16_t); // [short]
-        flags |= CASS_QUERY_FLAG_SERIAL_CONSISTENCY;
-      }
+    // <flags>[<serial_consistency><timestamp><keyspace>]
+    if (version >= CASS_PROTOCOL_VERSION_V5) {
+      buf_size += sizeof(int32_t); // [int]
+    } else {
+      buf_size += sizeof(uint8_t); // [byte]
+    }
 
-      if (callback->timestamp() != CASS_INT64_MIN) {
-        buf_size += sizeof(int64_t); // [long]
-        flags |= CASS_QUERY_FLAG_DEFAULT_TIMESTAMP;
-      }
+    if (callback->serial_consistency() != 0) {
+      buf_size += sizeof(uint16_t); // [short]
+      flags |= CASS_QUERY_FLAG_SERIAL_CONSISTENCY;
+    }
+
+    if (callback->timestamp() != CASS_INT64_MIN) {
+      buf_size += sizeof(int64_t); // [long]
+      flags |= CASS_QUERY_FLAG_DEFAULT_TIMESTAMP;
+    }
+
+    if (version.supports_set_keyspace() && !keyspace().empty()) {
+      buf_size += sizeof(uint16_t) + keyspace().size();
+      flags |= CASS_QUERY_FLAG_WITH_KEYSPACE;
     }
 
     Buffer buf(buf_size);
 
     size_t pos = buf.encode_uint16(0, callback->consistency());
-    if (version >= 3) {
-      if (version >= 5) {
-        pos = buf.encode_int32(pos, flags);
-      } else {
-        pos = buf.encode_byte(pos, flags);
-      }
+    if (version >= CASS_PROTOCOL_VERSION_V5) {
+      pos = buf.encode_int32(pos, flags);
+    } else {
+      pos = buf.encode_byte(pos, flags);
+    }
 
-      if (serial_consistency() != 0) {
-        pos = buf.encode_uint16(pos, serial_consistency());
-      }
+    if (callback->serial_consistency() != 0) {
+      pos = buf.encode_uint16(pos, callback->serial_consistency());
+    }
 
-      if (callback->timestamp() != CASS_INT64_MIN) {
-        pos = buf.encode_int64(pos, callback->timestamp());
-      }
+    if (callback->timestamp() != CASS_INT64_MIN) {
+      pos = buf.encode_int64(pos, callback->timestamp());
+    }
+
+    if (version.supports_set_keyspace() && !keyspace().empty()) {
+      pos = buf.encode_string(pos, keyspace().data(), keyspace().size());
     }
 
     bufs->push_back(buf);
@@ -181,27 +219,33 @@ int BatchRequest::encode(int version, RequestCallback* callback, BufferVec* bufs
 }
 
 void BatchRequest::add_statement(Statement* statement) {
-  if (statement->kind() == CASS_BATCH_KIND_PREPARED) {
-    ExecuteRequest* execute_request = static_cast<ExecuteRequest*>(statement);
-    prepared_statements_[execute_request->prepared()->id()] = execute_request;
+  // If the keyspace is not set then inherit the keyspace of the first
+  // statement with a non-empty keyspace.
+  if (keyspace().empty()) {
+    set_keyspace(statement->keyspace());
   }
   statements_.push_back(Statement::Ptr(statement));
 }
 
-bool BatchRequest::prepared_statement(const std::string& id,
-                                      std::string* statement) const {
-  PreparedMap::const_iterator it = prepared_statements_.find(id);
-  if (it != prepared_statements_.end()) {
-    *statement = it->second->prepared()->statement();
-    return true;
+bool BatchRequest::find_prepared_query(const String& id, String* query) const {
+  for (StatementVec::const_iterator it = statements_.begin(),
+       end = statements_.end(); it != end; ++it) {
+    const Statement::Ptr& statement(*it);
+    if (statement->kind() == CASS_BATCH_KIND_PREPARED) {
+      ExecuteRequest* execute_request = static_cast<ExecuteRequest*>(statement.get());
+      if (execute_request->prepared()->id() == id) {
+        *query = execute_request->prepared()->query();
+        return true;
+      }
+    }
   }
   return false;
 }
 
-bool BatchRequest::get_routing_key(std::string* routing_key, EncodingCache* cache) const {
-  for (BatchRequest::StatementList::const_iterator i = statements_.begin();
+bool BatchRequest::get_routing_key(String* routing_key) const {
+  for (BatchRequest::StatementVec::const_iterator i = statements_.begin();
        i != statements_.end(); ++i) {
-    if ((*i)->get_routing_key(routing_key, cache)) {
+    if ((*i)->get_routing_key(routing_key)) {
       return true;
     }
   }

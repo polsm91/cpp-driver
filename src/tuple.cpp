@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@
 extern "C" {
 
 CassTuple* cass_tuple_new(size_t item_count) {
-  return CassTuple::to(new cass::Tuple(item_count));
+  return CassTuple::to(cass::Memory::allocate<cass::Tuple>(item_count));
 }
 
 CassTuple* cass_tuple_new_from_data_type(const CassDataType* data_type) {
@@ -36,12 +36,12 @@ CassTuple* cass_tuple_new_from_data_type(const CassDataType* data_type) {
     return NULL;
   }
   return CassTuple::to(
-        new cass::Tuple(
+        cass::Memory::allocate<cass::Tuple>(
           cass::DataType::ConstPtr(data_type)));
 }
 
 void cass_tuple_free(CassTuple* tuple) {
-  delete tuple->from();
+  cass::Memory::deallocate(tuple->from());
 }
 
 const CassDataType* cass_tuple_data_type(const CassTuple* tuple) {
@@ -82,7 +82,7 @@ CASS_TUPLE_SET(duration,
 CassError cass_tuple_set_string(CassTuple* tuple,
                                 size_t index,
                                 const char* value) {
-  return tuple->set(index, cass::CassString(value, strlen(value)));
+  return tuple->set(index, cass::CassString(value, SAFE_STRLEN(value)));
 }
 
 CassError cass_tuple_set_string_n(CassTuple* tuple,
@@ -131,7 +131,7 @@ CassError Tuple::set(size_t index, const Tuple* value) {
 
 CassError Tuple::set(size_t index, const Collection* value) {
   CASS_TUPLE_CHECK_INDEX_AND_TYPE(index, value);
-  items_[index] = value->encode_with_length(CASS_HIGHEST_SUPPORTED_PROTOCOL_VERSION);
+  items_[index] = value->encode_with_length();
   return CASS_OK;
 }
 

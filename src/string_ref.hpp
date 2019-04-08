@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -18,14 +18,15 @@
 #define __CASS_STRING_REF_HPP_INCLUDED__
 
 #include "hash.hpp"
+#include "macros.hpp"
+#include "string.hpp"
+#include "vector.hpp"
 
 #include <algorithm>
 #include <assert.h>
 #include <cctype>
 #include <stddef.h>
-#include <string>
 #include <string.h>
-#include <vector>
 
 namespace cass {
 
@@ -76,15 +77,16 @@ public:
 
   StringRef(const char* str)
     : ptr_(str)
-    , length_(str != NULL ? strlen(str) : 0) {}
+    , length_(SAFE_STRLEN(str)) {}
 
-  StringRef(const std::string& str)
+  StringRef(const String& str)
     : ptr_(str.data())
     , length_(str.size()) {}
 
   const char* data() const { return ptr_; }
   size_t size() const { return length_; }
   size_t length() const { return length_; }
+  bool empty() const { return size() == 0; }
 
   iterator begin() const { return ptr_; }
   iterator end() const { return ptr_ + length_; }
@@ -92,8 +94,8 @@ public:
   char front() const { return ptr_[0]; }
   char back() const { return ptr_[length_ - 1]; }
 
-  std::string to_string() const {
-    return std::string(ptr_, length_);
+  String to_string() const {
+    return String(ptr_, length_);
   }
 
   StringRef substr(size_t pos = 0, size_t length = npos) {
@@ -152,8 +154,8 @@ private:
   size_t length_;
 };
 
-typedef std::vector<std::string> StringVec;
-typedef std::vector<StringRef> StringRefVec;
+typedef Vector<String> StringVec;
+typedef Vector<StringRef> StringRefVec;
 
 inline StringVec to_strings(const StringRefVec& refs) {
   StringVec strings;

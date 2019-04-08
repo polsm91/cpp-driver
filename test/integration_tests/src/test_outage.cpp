@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -131,7 +131,7 @@ struct OutageTests : public test_utils::MultipleNodesTest {
                 nodes_states[i] = GOSSIP_DISABLED;
               }
             } else if (random_int(1, 100) <= 50) {
-              ccm->decommission_node(i);
+              ccm->force_decommission_node(i);
               nodes_states[i] = REMOVED;
               ccm->stop_node(i);
             } else {

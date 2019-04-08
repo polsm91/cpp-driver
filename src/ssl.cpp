@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@
 extern "C" {
 
 CassSsl* cass_ssl_new() {
-  cass::SslContextFactory::init();
+  cass::SslContextFactory::init_once();
   return cass_ssl_new_no_lib_init();
 }
 
@@ -39,7 +39,7 @@ void cass_ssl_free(CassSsl* ssl) {
 }
 
 CassError cass_ssl_add_trusted_cert(CassSsl* ssl, const char* cert) {
-  return cass_ssl_add_trusted_cert_n(ssl, cert, strlen(cert));
+  return cass_ssl_add_trusted_cert_n(ssl, cert, SAFE_STRLEN(cert));
 }
 
 CassError cass_ssl_add_trusted_cert_n(CassSsl* ssl, const char* cert, size_t cert_length) {
@@ -51,7 +51,7 @@ void cass_ssl_set_verify_flags(CassSsl* ssl, int flags) {
 }
 
 CassError cass_ssl_set_cert(CassSsl* ssl, const char* cert) {
-  return cass_ssl_set_cert_n(ssl, cert, strlen(cert));
+  return cass_ssl_set_cert_n(ssl, cert, SAFE_STRLEN(cert));
 }
 
 CassError cass_ssl_set_cert_n(CassSsl* ssl,
@@ -64,8 +64,8 @@ CassError cass_ssl_set_private_key(CassSsl* ssl,
                                    const char* key,
                                    const char* password) {
   return cass_ssl_set_private_key_n(ssl,
-                                    key, strlen(key),
-                                    password, strlen(password));
+                                    key, SAFE_STRLEN(key),
+                                    password, SAFE_STRLEN(password));
 }
 
 CassError cass_ssl_set_private_key_n(CassSsl* ssl,
@@ -83,17 +83,7 @@ CassError cass_ssl_set_private_key_n(CassSsl* ssl,
 
 namespace cass {
 
-static uv_once_t ssl_init_guard = UV_ONCE_INIT;
-
 template<class T>
-SslContext::Ptr SslContextFactoryBase<T>::create() {
-  return T::create();
-}
-
-template<class T>
-void SslContextFactoryBase<T>::init() {
-  uv_once(&ssl_init_guard, T::init);
-}
-
+uv_once_t SslContextFactoryBase<T>::ssl_init_guard = UV_ONCE_INIT;
 
 } // namespace cass

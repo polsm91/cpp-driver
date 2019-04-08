@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -524,7 +524,7 @@ void query_sessions(const SessionContainer& sessions) {
 static void minor_chaos(void *ccm) {
   CCM::Bridge* ccm_ptr = static_cast<CCM::Bridge*>(ccm);
   ccm_ptr->kill_node(1);
-  ccm_ptr->decommission_node(2);
+  ccm_ptr->force_decommission_node(2);
   ccm_ptr->start_node(1);
   ccm_ptr->disable_node_gossip(3);
 }

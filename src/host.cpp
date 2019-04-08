@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -15,6 +15,10 @@
 */
 
 #include "host.hpp"
+
+#include "row.hpp"
+#include "value.hpp"
+#include "collection_iterator.hpp"
 
 namespace cass {
 
@@ -32,13 +36,18 @@ void add_host(CopyOnWriteHostVec& hosts, const Host::Ptr& host) {
 }
 
 void remove_host(CopyOnWriteHostVec& hosts, const Host::Ptr& host) {
+  remove_host(hosts, host->address());
+}
+
+bool remove_host(CopyOnWriteHostVec& hosts, const Address& address) {
   HostVec::iterator i;
   for (i = hosts->begin(); i != hosts->end(); ++i) {
-    if ((*i)->address() == host->address()) {
+    if ((*i)->address() == address) {
       hosts->erase(i);
-      break;
+      return true;
     }
   }
+  return false;
 }
 
 void Host::LatencyTracker::update(uint64_t latency_ns) {
@@ -67,8 +76,95 @@ void Host::LatencyTracker::update(uint64_t latency_ns) {
   current_.timestamp = now;
 }
 
-bool VersionNumber::parse(const std::string& version) {
+bool VersionNumber::parse(const String& version) {
   return sscanf(version.c_str(), "%d.%d.%d", &major_version_, &minor_version_, &patch_version_) >= 2;
+}
+
+void Host::set(const Row* row, bool use_tokens) {
+  const Value* v;
+
+  String rack;
+  row->get_string_by_name("rack", &rack);
+
+  String dc;
+  row->get_string_by_name("data_center", &dc);
+
+  String release_version;
+  row->get_string_by_name("release_version", &release_version);
+
+  rack_ = rack;
+  dc_ = dc;
+
+  VersionNumber server_version;
+  if (server_version.parse(release_version)) {
+    server_version_ = server_version;
+  } else {
+    LOG_WARN("Invalid release version string \"%s\" on host %s",
+             release_version.c_str(),
+             address().to_string().c_str());
+  }
+
+  // Possibly correct for invalid Cassandra version numbers for specific
+  // versions of DSE.
+  if (server_version_ >= VersionNumber(4, 0, 0) &&
+      row->get_by_name("dse_version") != NULL) { // DSE only
+    String dse_version_str;
+    row->get_string_by_name("dse_version", &dse_version_str);
+
+    VersionNumber dse_version;
+    if (dse_version.parse(dse_version_str)) {
+      // Versions before DSE 6.7 erroneously return they support Cassandra 4.0.0
+      // features even though they don't.
+      if (dse_version < VersionNumber(6, 7, 0)) {
+        server_version_ = VersionNumber(3, 11, 0);
+      }
+    } else {
+      LOG_WARN("Invalid DSE version string \"%s\" on host %s",
+               dse_version_str.c_str(),
+               address().to_string().c_str());
+    }
+  }
+
+  row->get_string_by_name("partitioner", &partitioner_);
+
+  if (use_tokens) {
+    v = row->get_by_name("tokens");
+    if (v != NULL && v->is_collection()) {
+      CollectionIterator iterator(v);
+      while (iterator.next()) {
+        tokens_.push_back(iterator.value()->to_string());
+      }
+    }
+  }
+}
+
+ExternalHostListener::ExternalHostListener(const CassHostListenerCallback callback,
+                                           void *data)
+  : callback_(callback)
+  , data_(data) { }
+
+void ExternalHostListener::on_host_up(const Host::Ptr& host) {
+  CassInet address;
+  address.address_length = host->address().to_inet(address.address);
+  callback_(CASS_HOST_LISTENER_EVENT_UP, address, data_);
+}
+
+void ExternalHostListener::on_host_down(const Host::Ptr& host) {
+  CassInet address;
+  address.address_length = host->address().to_inet(address.address);
+  callback_(CASS_HOST_LISTENER_EVENT_DOWN, address, data_);
+}
+
+void ExternalHostListener::on_host_added(const Host::Ptr& host) {
+  CassInet address;
+  address.address_length = host->address().to_inet(address.address);
+  callback_(CASS_HOST_LISTENER_EVENT_ADD, address, data_);
+}
+
+void ExternalHostListener::on_host_removed(const Host::Ptr& host) {
+  CassInet address;
+  address.address_length = host->address().to_inet(address.address);
+  callback_(CASS_HOST_LISTENER_EVENT_REMOVE, address, data_);
 }
 
 } // namespace cass

@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -15,29 +15,38 @@
 */
 
 #include "startup_request.hpp"
-
-#include "serialization.hpp"
+#include "driver_info.hpp"
 
 namespace cass {
 
-int StartupRequest::encode(int version, RequestCallback* callback, BufferVec* bufs) const {
+int StartupRequest::encode(ProtocolVersion version,
+                           RequestCallback* callback,
+                           BufferVec* bufs) const {
   // <options> [string map]
   size_t length = sizeof(uint16_t);
 
-  std::map<std::string, std::string> options;
-  if (!compression_.empty()) {
-    const char* key = "COMPRESSION";
-    length += sizeof(uint16_t) + strlen(key);
-    length += sizeof(uint16_t) + compression_.size();
-    options[key] = compression_;
+  OptionsMap options;
+  if (!application_name_.empty()) {
+    options["APPLICATION_NAME"] = application_name_;
+  }
+  if (!application_version_.empty()) {
+    options["APPLICATION_VERSION"] = application_version_;
+  }
+  if (!client_id_.empty()) {
+    options["CLIENT_ID"] = client_id_;
+  }
+  options["CQL_VERSION"] = CASS_DEFAULT_CQL_VERSION;
+  options["DRIVER_NAME"] = driver_name();
+  options["DRIVER_VERSION"] = driver_version();
+  if (no_compact_enabled_) {
+    options["NO_COMPACT"] = "true";
   }
 
-  if (!version_.empty()) {
-    const char* key = "CQL_VERSION";
-    length += 2 + strlen(key);
-    length += 2 + version_.size();
-    options[key] = version_;
-  }
+  for (OptionsMap::const_iterator it = options.begin(),
+       end = options.end(); it != end; ++it) {
+    length += sizeof(uint16_t) + it->first.size();
+    length += sizeof(uint16_t) + it->second.size();
+   }
 
   bufs->push_back(Buffer(length));
   bufs->back().encode_string_map(0, options);

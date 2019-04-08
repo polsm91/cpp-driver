@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -45,7 +45,7 @@ public:
     test_utils::CassStatementPtr statement(cass_statement_new(query.str().c_str(), 0));
     test_utils::CassFuturePtr future(cass_session_execute(session.get(), statement.get()));
     if (cass_future_error_code(future.get()) ==  CASS_OK) {
-      return cass::get_host_from_future(future.get());
+      return cass::get_host_from_future(future.get()).c_str();
     } else {
       CassString message;
       cass_future_error_message(future.get(), &message.data, &message.length);
@@ -147,7 +147,10 @@ BOOST_AUTO_TEST_CASE(reconnection)
   ccm->stop_node(1);
 
   // Add a new node to make sure the node gets added on the new control connection to node 2
-  int node = ccm->bootstrap_node("\"-Dcassandra.consistent.rangemovement=false -Dcassandra.ring_delay_ms=1000\""); // Allow this node to come up without node1
+  std::vector<std::string> jvm_arguments;
+  jvm_arguments.push_back("-Dcassandra.consistent.rangemovement=false");
+  jvm_arguments.push_back("-Dcassandra.ring_delay_ms=10000");
+  int node = ccm->bootstrap_node(jvm_arguments); // Allow this node to come up without node1
   test_utils::wait_for_node_connection(ip_prefix, node);
 
   // Stop the other node
@@ -182,7 +185,7 @@ BOOST_AUTO_TEST_CASE(topology_change)
   check_for_live_hosts(session, should_be_present);
 
   // Decommissioning a node will trigger a "REMOVED_NODE" event
-  ccm->decommission_node(2);
+  ccm->force_decommission_node(2);
 
   should_be_present.erase(ip_prefix + "2");
   check_for_live_hosts(session, should_be_present);
@@ -395,7 +398,7 @@ BOOST_AUTO_TEST_CASE(node_decommission)
     BOOST_CHECK_EQUAL(test_utils::CassLog::message_count(), 2ul);
 
     test_utils::CassLog::reset("Spawning new connection to host " + ip_prefix + "1");
-    ccm->decommission_node(1);
+    ccm->force_decommission_node(1);
     std::cout << "Node Decommissioned [" << ip_prefix << "1]: Sleeping for 30 seconds" << std::endl;
     boost::this_thread::sleep_for(boost::chrono::seconds(30));
   }

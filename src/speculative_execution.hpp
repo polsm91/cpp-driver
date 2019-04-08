@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -18,9 +18,10 @@
 #define __CASS_SPECULATIVE_EXECUTION_HPP_INCLUDED__
 
 #include "host.hpp"
+#include "memory.hpp"
 #include "ref_counted.hpp"
+#include "string.hpp"
 
-#include <string>
 #include <stdint.h>
 
 namespace cass {
@@ -36,9 +37,11 @@ public:
 
 class SpeculativeExecutionPolicy : public RefCounted<SpeculativeExecutionPolicy> {
 public:
+  typedef SharedRefPtr<SpeculativeExecutionPolicy> Ptr;
+
   virtual ~SpeculativeExecutionPolicy() { }
 
-  virtual SpeculativeExecutionPlan* new_plan(const std::string& keyspace,
+  virtual SpeculativeExecutionPlan* new_plan(const String& keyspace,
                                              const Request* request) = 0;
 
   virtual SpeculativeExecutionPolicy* new_instance() = 0;
@@ -51,12 +54,14 @@ public:
 
 class NoSpeculativeExecutionPolicy : public SpeculativeExecutionPolicy {
 public:
-  virtual SpeculativeExecutionPlan* new_plan(const std::string& keyspace,
+  virtual SpeculativeExecutionPlan* new_plan(const String& keyspace,
                                              const Request* request) {
-    return new NoSpeculativeExecutionPlan();
+    return Memory::allocate<NoSpeculativeExecutionPlan>();
   }
 
-  virtual SpeculativeExecutionPolicy* new_instance()  { return this; }
+  virtual SpeculativeExecutionPolicy* new_instance()  {
+    return  Memory::allocate<NoSpeculativeExecutionPolicy>();
+  }
 };
 
 class ConstantSpeculativeExecutionPlan : public SpeculativeExecutionPlan {
@@ -80,13 +85,16 @@ public:
     : constant_delay_ms_(constant_delay_ms)
     , max_speculative_executions_(max_speculative_executions) { }
 
-  virtual SpeculativeExecutionPlan* new_plan(const std::string& keyspace,
+  virtual SpeculativeExecutionPlan* new_plan(const String& keyspace,
                                              const Request* request) {
-    return new ConstantSpeculativeExecutionPlan(constant_delay_ms_,
-                                                max_speculative_executions_);
+    return Memory::allocate<ConstantSpeculativeExecutionPlan>(constant_delay_ms_,
+                                                              max_speculative_executions_);
   }
 
-  virtual SpeculativeExecutionPolicy* new_instance()  { return this; }
+  virtual SpeculativeExecutionPolicy* new_instance()  {
+    return Memory::allocate<ConstantSpeculativeExecutionPolicy>(constant_delay_ms_,
+                                                                max_speculative_executions_);
+  }
 
   const int64_t constant_delay_ms_;
   const int max_speculative_executions_;

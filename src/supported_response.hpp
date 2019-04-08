@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -19,9 +19,8 @@
 
 #include "response.hpp"
 #include "constants.hpp"
-
-#include <list>
-#include <string>
+#include "string.hpp"
+#include "vector.hpp"
 
 namespace cass {
 
@@ -30,11 +29,16 @@ public:
   SupportedResponse()
       : Response(CQL_OPCODE_SUPPORTED) {}
 
-  bool decode(int version, char* buffer, size_t size);
+  virtual bool decode(Decoder& decoder);
+
+  const Vector<String> compression() { return compression_; }
+  const Vector<String> cql_versions() { return cql_versions_; }
+  const Vector<String> protocol_versions() { return protocol_versions_; }
 
 private:
-  std::list<std::string> compression_;
-  std::list<std::string> versions_;
+  Vector<String> compression_;
+  Vector<String> cql_versions_;
+  Vector<String> protocol_versions_;
 };
 
 } // namespace cass

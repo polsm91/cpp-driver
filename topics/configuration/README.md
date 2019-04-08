@@ -6,7 +6,7 @@ Load balancing controls how queries are distributed to nodes in a Cassandra
 cluster.
 
 Without additional configuration the C/C++ driver defaults to using Datacenter-aware
-load balancing with token-aware routing. Meaning the driver will only send
+load balancing with token-aware routing. This means that driver will only send
 queries to nodes in the local datacenter (for local consistency levels) and
 it will use the primary key of queries to route them directly to the nodes where the
 corresponding data is located.
@@ -26,6 +26,10 @@ consistency levels are used or if the driver is configured to use remote nodes
 with the [`allow_remote_dcs_for_local_cl`] setting.
 
 ```c
+CassCluster* cluster = cass_cluster_new();
+
+const char* local_dc = "dc1"; /* Local datacenter name */
+
 /*
  * Use up to 2 remote datacenter nodes for remote consistency levels
  * or when `allow_remote_dcs_for_local_cl` is enabled.
@@ -36,8 +40,13 @@ unsigned used_hosts_per_remote_dc = 2;
 cass_bool_t allow_remote_dcs_for_local_cl = cass_false;
 
 cass_cluster_set_load_balance_dc_aware(cluster,
+                                       local_dc,
                                        used_hosts_per_remote_dc,
                                        allow_remote_dcs_for_local_cl);
+
+/* ... */
+
+cass_cluster_free(cluster);
 ```
 
 ### Token-aware Routing
@@ -49,11 +58,17 @@ can improve query latency and reduce load on the Cassandra nodes. It can be used
 in conjunction with other load balancing and routing policies.
 
 ```c
+CassCluster* cluster = cass_cluster_new();
+
 /* Enable token-aware routing (this is the default setting) */
 cass_cluster_set_token_aware_routing(cluster, cass_true);
 
 /* Disable token-aware routing */
 cass_cluster_set_token_aware_routing(cluster, cass_false);
+
+/* ... */
+
+cass_cluster_free(cluster);
 ```
 
 ### Latency-aware Routing
@@ -63,6 +78,8 @@ to poorly performing Cassandra nodes. It can be used in conjunction with other
 load balancing and routing policies.
 
 ```c
+CassCluster* cluster = cass_cluster_new();
+
 /* Disable latency-aware routing (this is the default setting) */
 cass_cluster_set_latency_aware_routing(cluster, cass_false);
 
@@ -94,9 +111,13 @@ cass_cluster_set_latency_aware_routing_settings(cluster,
                                                 retry_period_ms,
                                                 update_rate_ms,
                                                 min_measured);
+
+/* ... */
+
+cass_cluster_free(cluster);
 ```
 
-### Filtering
+### Filtering policies
 
 #### Whitelist
 
@@ -111,12 +132,18 @@ NOTE: Using this policy to limit the connections of the driver to a predefined
       DC aware in conjunction with the round robin load balancing policy.
 
 ```c
+CassCluster* cluster = cass_cluster_new();
+
 /* Set the list of predefined hosts the driver is allowed to connect to */
 cass_cluster_set_whitelist_filtering(cluster,
                                      "127.0.0.1, 127.0.0.3, 127.0.0.5");
 
 /* The whitelist can be cleared (and disabled) by using an empty string */
 cass_cluster_set_whitelist_filtering(cluster, "");
+
+/* ... */
+
+cass_cluster_free(cluster);
 ```
 
 #### Blacklist
@@ -125,12 +152,18 @@ This policy is the inverse of the whitelist policy where hosts provided in the
 blacklist filter will be ignored and a connection will not be established.
 
 ```c
+CassCluster* cluster = cass_cluster_new();
+
 /* Set the list of predefined hosts the driver is NOT allowed to connect to */
 cass_cluster_set_blacklist_filtering(cluster,
                                      "127.0.0.1, 127.0.0.3, 127.0.0.5");
 
 /* The blacklist can be cleared (and disabled) by using an empty string */
 cass_cluster_set_blacklist_filtering(cluster, "");
+
+/* ... */
+
+cass_cluster_free(cluster);
 ```
 
 #### Datacenter
@@ -139,19 +172,32 @@ Filtering can also be performed on all hosts in a datacenter or multiple
 datacenters when using the whitelist/blacklist datacenter filtering polices.
 
 ```c
+CassCluster* cluster = cass_cluster_new();
+
 /* Set the list of predefined datacenters the driver is allowed to connect to */
 cass_cluster_set_whitelist_dc_filtering(cluster, "dc2, dc4");
 
 /* The datacenter whitelist can be cleared/disabled by using an empty string */
 cass_cluster_set_whitelist_dc_filtering(cluster, "");
+
+/* ... */
+
+cass_cluster_free(cluster);
 ```
 
 ```c
+CassCluster* cluster = cass_cluster_new();
+
+
 /* Set the list of predefined datacenters the driver is NOT allowed to connect to */
 cass_cluster_set_blacklist_dc_filtering(cluster, "dc2, dc4");
 
 /* The datacenter blacklist can be cleared/disabled by using an empty string */
 cass_cluster_set_blacklist_dc_filtering(cluster, "");
+
+/* ... */
+
+cass_cluster_free(cluster);
 ```
 
 ## Speculative Execution
@@ -181,7 +227,11 @@ an application to explicitly mark a statement as being idempotent.
 
 ```c
 CassStatement* statement = cass_statement_new( "SELECT * FROM table1", 0);
+
+/* Make the statement idempotent */
 cass_statement_set_is_idempotent(statement, cass_true);
+
+cass_statement_free(statement);
 ```
 
 ### Enabling speculative execution
@@ -197,11 +247,17 @@ with the subsequent executions being created 500 milliseconds apart.
 
 ```c
 CassCluster* cluster = cass_cluster_new();
+
 cass_int64_t constant_delay_ms = 500; /* Delay before a new execution is created */
 int max_speculative_executions = 2;   /* Number of executions */
-cass_cluster_set_constant_speculative_execution_policy(cluster
+
+cass_cluster_set_constant_speculative_execution_policy(cluster,
                                                        constant_delay_ms,
                                                        max_speculative_executions);
+
+/* ... */
+
+cass_cluster_free(cluster);
 ```
 
 ### Connection Heartbeats
@@ -213,11 +269,17 @@ driver sends a heartbeat every 30 seconds. This can be changed or disabled (0
 second interval) using the following:
 
 ```c
+CassCluster* cluster = cass_cluster_new();
+
 /* Change the heartbeat interval to 1 minute */
 cass_cluster_set_connection_heartbeat_interval(cluster, 60);
 
 /* Disable heartbeat requests */
 cass_cluster_set_connection_heartbeat_interval(cluster, 0);
+
+/* ... */
+
+cass_cluster_free(cluster);
 ```
 Heartbeats are also used to detect unresponsive connections. An idle timeout
 setting controls the amount of time a connection is allowed to be without a
@@ -225,12 +287,62 @@ successful heartbeat before being terminated and scheduled for reconnection. Thi
 interval can be changed from the default of 60 seconds:
 
 ```c
+CassCluster* cluster = cass_cluster_new();
+
 /* Change the idle timeout to 2 minute */
 cass_cluster_set_connection_idle_timeout(cluster, 120);
+
+/* ... */
+
+cass_cluster_free(cluster);
 ```
 
 It can be disabled by setting the value to a very long timeout or by disabling
 heartbeats.
+
+### Host State Changes
+
+The status and membership of a node can change within the life-cycle of the
+cluster. A host listener callback can be used to detect these changes.
+
+**Important**: The driver runs the host listener callback on a thread that is
+               different from the application. Any data accessed in the
+               callback must be immutable or synchronized with a mutex,
+               semaphore, etc.
+
+```c
+void on_host_listener(CassHostListenerEvent event, CassInet inet, void* data) {
+  /* Get the string representation of the inet address */
+  char address[CASS_INET_STRING_LENGTH];
+  cass_inet_string(inet, address);
+
+  /* Perform application logic for host listener event */
+  if (event == CASS_HOST_LISTENER_EVENT_ADD) {
+    printf("Host %s has been ADDED\n", address);
+   } else if (event == CASS_HOST_LISTENER_EVENT_REMOVE) {
+    printf("Host %s has been REMOVED\n", address);
+   } else if (event == CASS_HOST_LISTENER_EVENT_UP) {
+    printf("Host %s is UP\n", address);
+   } else if (event == CASS_HOST_LISTENER_EVENT_DOWN) {
+    printf("Host %s is DOWN\n", address);
+   }
+}
+
+int main() {
+  CassCluster* cluster = cass_cluster_new();
+
+  /* Register the host listener callback */
+  cass_cluster_set_host_listener_callback(cluster, on_host_listener, NULL);
+
+  /* ... */
+
+  cass_cluster_free(cluster);
+}
+```
+
+**Note**: Expensive (e.g. slow) operations should not be performed in host
+          listener callbacks. Performing expensive operations in a callback
+          will block or slow the driver's normal operation.
 
 ### Performance Tips
 
@@ -255,28 +367,6 @@ This can prevent requests from being sent to nodes that are underperforming.
 Both [latency-aware] and [token-aware] can be use together to obtain the benefits of
 both.
 
-#### High throughput applications may need increase watermark settings
-
-If your application is submitting a large number of requests it may trigger the
-driver's back pressure mechanism.  This means Cassandra cannot maintain your
-request rate and requests are starting to queue in the driver (as a pending
-request). This mechanism keeps the driver from queueing your requests until
-memory is exhausted and is a signal to your application to slow down. However,
-you can increase these parameters:
-
-```c
-cass_cluster_set_pending_requests_low_water_mark(cluster, 5000);
-cass_cluster_set_pending_requests_high_water_mark(cluster, 10000);
-```
-
-If your applications requests are very large you may need to adjust the size
-watermarks:
-
-```c
-cass_cluster_set_write_bytes_low_water_mark(cluster, 512 * 1024);
-cass_cluster_set_write_bytes_high_water_mark(cluster, 1024 * 1024);
-```
-
 #### Use [paging] when retrieving large result sets
 
 Using a large page size or a very high `LIMIT` clause can cause your application
@@ -294,6 +384,52 @@ request can complete. In multi-datacenter configurations, consistency levels suc
 `EACH_QUORUM` can cause a request to wait for replication across a slower cross
 datacenter network link.  More information about setting the consistency level
 can be found [here](http://datastax.github.io/cpp-driver/topics/basics/consistency/).
+
+### Driver Tuning
+
+Beyond the performance tips and best practices considered in the previous
+section your application might consider tuning the more fine-grain driver
+settings in this section to achieve optimal performance for your application's
+specific workload.
+
+#### Increasing core connections
+
+In some workloads, throughput can be increased by increasing the number of core
+connections. By default, the driver uses a single core connection per host. It's
+recommended that you try increasing the core connections to two and slowly
+increase this number while doing performance testing. Two core connections is
+often a good setting and increasing the core connections too high will decrease
+performance because having multiple connections to a single host inhibits the
+driver's ability to coalesce multiple requests into a fewer number of system
+calls.
+
+#### Coalesce delay
+
+The coalesce delay is an optimization to reduce the number of system calls
+required to process requests. This setting controls how long the driver's I/O
+threads wait for requests to accumulate before flushing them on to the wire.
+Larger values for coalesce delay are preferred for throughput-based workloads as
+it can significantly reduce the number of system calls required to process
+requests.
+
+In general, the coalesce delay should be increased for throughput-based
+workloads and can be decreased for latency-based workloads. Most importantly,
+the delay should consider the responsiveness guarantees of your application.
+
+Note: Single, sporadic requests are not generally affected by this delay and
+are processed immediately.
+
+#### New request ratio
+
+The new request ratio controls how much time an I/O thread spends processing new
+requests versus handling outstanding requests. This value is a percentage (with
+a value from 1 to 100), where larger values will dedicate more time to
+processing new requests and less time on outstanding requests. The goal of this
+setting is to balance the time spent processing new/outstanding requests and
+prevent either from fully monopolizing the I/O thread's processing time. It's
+recommended that your application decrease this value if computationally
+expensive or long-running future callbacks are used (via
+`cass_future_set_callback()`), otherwise this can be left unchanged.
 
 [`allow_remote_dcs_for_local_cl`]: http://datastax.github.io/cpp-driver/api/struct.CassCluster/#1a46b9816129aaa5ab61a1363489dccfd0
 [`OPTIONS`]: https://github.com/apache/cassandra/blob/cassandra-3.0/doc/native_protocol_v3.spec

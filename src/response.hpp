@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -19,12 +19,16 @@
 
 #include "utils.hpp"
 #include "constants.hpp"
+#include "decoder.hpp"
 #include "hash_table.hpp"
 #include "macros.hpp"
+#include "memory.hpp"
 #include "ref_counted.hpp"
 #include "scoped_ptr.hpp"
 
 #include <uv.h>
+
+#define CHECK_RESULT(result) if(!(result)) return false;
 
 namespace cass {
 
@@ -32,18 +36,7 @@ class Response : public RefCounted<Response> {
 public:
   typedef SharedRefPtr<Response> Ptr;
 
-  struct CustomPayloadItem {
-    CustomPayloadItem(StringRef name, StringRef value)
-      : name(name)
-      , value(value) { }
-    StringRef name;
-    StringRef value;
-  };
-  typedef SmallVector<CustomPayloadItem, 8> CustomPayloadVec;
-  typedef SmallVector<StringRef, 8> WarningVec;
-
-  Response(uint8_t opcode)
-      : opcode_(opcode) { }
+  Response(uint8_t opcode);
 
   virtual ~Response() { }
 
@@ -57,18 +50,28 @@ public:
     buffer_ = RefBuffer::Ptr(RefBuffer::create(size));
   }
 
+  bool has_tracing_id() const;
+
+  const CassUuid& tracing_id() const { return tracing_id_; }
+
   const CustomPayloadVec& custom_payload() const { return custom_payload_; }
 
-  char* decode_custom_payload(char* buffer, size_t size);
+  const WarningVec& warnings() const { return warnings_; }
 
-  char* decode_warnings(char* buffer, size_t size);
+  bool decode_trace_id(Decoder& decoder);
 
-  virtual bool decode(int version, char* buffer, size_t size) = 0;
+  bool decode_custom_payload(Decoder& decoder);
+
+  bool decode_warnings(Decoder& decoder);
+
+  virtual bool decode(Decoder& decoder) = 0;
 
 private:
   uint8_t opcode_;
   RefBuffer::Ptr buffer_;
+  CassUuid tracing_id_;
   CustomPayloadVec custom_payload_;
+  WarningVec warnings_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(Response);
@@ -90,7 +93,7 @@ public:
       , is_body_error_(false)
       , body_buffer_pos_(NULL) {}
 
-  uint8_t floats() const { return flags_; }
+  uint8_t flags() const { return flags_; }
 
   uint8_t opcode() const { return opcode_; }
 
@@ -100,7 +103,7 @@ public:
 
   bool is_body_ready() const { return is_body_ready_; }
 
-  ssize_t decode(char* input, size_t size);
+  ssize_t decode(const char* input, size_t size);
 
 private:
   bool allocate_body(int8_t opcode);

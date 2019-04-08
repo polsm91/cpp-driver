@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -46,35 +46,23 @@ CassHostDistance ListPolicy::distance(const Host::Ptr& host) const {
   return CASS_HOST_DISTANCE_IGNORE;
 }
 
-QueryPlan* ListPolicy::new_query_plan(const std::string& connected_keyspace,
+QueryPlan* ListPolicy::new_query_plan(const String& keyspace,
                                       RequestHandler* request_handler,
                                       const TokenMap* token_map) {
-  return child_policy_->new_query_plan(connected_keyspace,
+  return child_policy_->new_query_plan(keyspace,
                                        request_handler,
                                        token_map);
 }
 
-void ListPolicy::on_add(const Host::Ptr& host) {
+void ListPolicy::on_host_added(const Host::Ptr& host) {
   if (is_valid_host(host)) {
-    child_policy_->on_add(host);
+    child_policy_->on_host_added(host);
   }
 }
 
-void ListPolicy::on_remove(const Host::Ptr& host) {
+void ListPolicy::on_host_removed(const Host::Ptr& host) {
   if (is_valid_host(host)) {
-    child_policy_->on_remove(host);
-  }
-}
-
-void ListPolicy::on_up(const Host::Ptr& host) {
-  if (is_valid_host(host)) {
-    child_policy_->on_up(host);
-  }
-}
-
-void ListPolicy::on_down(const Host::Ptr& host) {
-  if (is_valid_host(host)) {
-    child_policy_->on_down(host);
+    child_policy_->on_host_removed(host);
   }
 }
 

@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ void cass_prepared_free(const CassPrepared* prepared) {
 }
 
 CassStatement* cass_prepared_bind(const CassPrepared* prepared) {
-  cass::ExecuteRequest* execute = new cass::ExecuteRequest(prepared);
+  cass::ExecuteRequest* execute = cass::Memory::allocate<cass::ExecuteRequest>(prepared);
   execute->inc_ref();
   return CassStatement::to(execute);
 }
@@ -58,7 +58,7 @@ const CassDataType* cass_prepared_parameter_data_type(const CassPrepared* prepar
 const CassDataType* cass_prepared_parameter_data_type_by_name(const CassPrepared* prepared,
                                                               const char* name) {
   return cass_prepared_parameter_data_type_by_name_n(prepared,
-                                                     name, strlen(name));
+                                                     name, SAFE_STRLEN(name));
 }
 
 const CassDataType* cass_prepared_parameter_data_type_by_name_n(const CassPrepared* prepared,
@@ -79,12 +79,15 @@ const CassDataType* cass_prepared_parameter_data_type_by_name_n(const CassPrepar
 namespace cass {
 
 Prepared::Prepared(const ResultResponse::Ptr& result,
-                   const std::string& statement,
+                   const PrepareRequest::ConstPtr& prepare_request,
                    const Metadata::SchemaSnapshot& schema_metadata)
   : result_(result)
-  , id_(result->prepared().to_string())
-  , statement_(statement) {
-  if (schema_metadata.protocol_version() >= 4) {
+  , id_(result->prepared_id().to_string())
+  , query_(prepare_request->query())
+  , keyspace_(prepare_request->keyspace())
+  , request_settings_(prepare_request->settings()) {
+  assert(result->protocol_version() > 0 && "The protocol version should be set");
+  if (result->protocol_version() >= CASS_PROTOCOL_VERSION_V4) {
     key_indices_ = result->pk_indices();
   } else {
     const KeyspaceMetadata* keyspace = schema_metadata.get_keyspace(result->keyspace().to_string());
@@ -95,10 +98,12 @@ Prepared::Prepared(const ResultResponse::Ptr& result,
         IndexVec indices;
         for (ColumnMetadata::Vec::const_iterator i = partition_key.begin(),
              end = partition_key.end(); i != end; ++i) {
-          if (result->metadata()->get_indices(StringRef((*i)->name()), &indices) > 0) {
+          const ColumnMetadata::Ptr& column(*i);
+          if (column && result->metadata()->get_indices(column->name(), &indices) > 0) {
             key_indices_.push_back(indices[0]);
           } else {
-            LOG_WARN("Unable to find key column '%s' in prepared query", (*i)->name().c_str());
+            LOG_WARN("Unable to find key column '%s' in prepared query",
+                     column ? column->name().c_str() : "<null>");
             key_indices_.clear();
             break;
           }

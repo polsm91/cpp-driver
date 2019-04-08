@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 namespace cass {
 
 bool BlacklistDCPolicy::is_valid_host(const Host::Ptr& host) const {
-  const std::string& host_dc = host->dc();
+  const String& host_dc = host->dc();
   for (DcList::const_iterator it = dcs_.begin(),
       end = dcs_.end(); it != end; ++it) {
     if (host_dc.compare(*it) == 0) {

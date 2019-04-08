@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -78,6 +78,13 @@ public:
   T* back() {
     if (is_empty()) return NULL;
     return static_cast<T*>(data_.prev_);
+  }
+
+  T* pop_front() {
+    T* first = front();
+    if (first != NULL)
+      remove(first);
+    return first;
   }
 
   size_t size() const { return size_; }

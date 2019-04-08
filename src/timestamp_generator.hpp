@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -30,6 +30,8 @@ namespace cass {
 
 class TimestampGenerator : public RefCounted<TimestampGenerator> {
 public:
+  typedef SharedRefPtr<TimestampGenerator> Ptr;
+
   enum Type {
     SERVER_SIDE,
     MONOTONIC

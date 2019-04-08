@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ namespace cass {
 
 class NoSslSession : public SslSession {
 public:
-  NoSslSession(const Host::ConstPtr& host);
+  NoSslSession(const Address& address, const String& hostname);
 
   virtual bool is_handshake_done() const { return false; }
   virtual void do_handshake() {}
@@ -34,7 +34,7 @@ public:
 class NoSslContext : public SslContext {
 public:
 
-  virtual SslSession* create_session(const Host::ConstPtr& host);
+  virtual SslSession* create_session(const Address& address, const String& hostname);
 
   virtual CassError add_trusted_cert(const char* cert, size_t cert_length);
   virtual CassError set_cert(const char* cert, size_t cert_length);
@@ -44,10 +44,12 @@ public:
                                     size_t password_length);
 };
 
-class NoSslContextFactory : SslContextFactoryBase<NoSslContextFactory> {
+class NoSslContextFactory : public SslContextFactoryBase<NoSslContextFactory> {
 public:
   static SslContext::Ptr create();
-  static void init() {}
+  static void internal_init() { }
+  static void internal_thread_cleanup() { }
+  static void internal_cleanup() { }
 };
 
 typedef SslContextFactoryBase<NoSslContextFactory> SslContextFactory;

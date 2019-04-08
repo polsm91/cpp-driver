@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -31,12 +31,12 @@ CassUserType* cass_user_type_new_from_data_type(const CassDataType* data_type) {
     return NULL;
   }
   return CassUserType::to(
-        new cass::UserTypeValue(
+        cass::Memory::allocate<cass::UserTypeValue>(
           cass::DataType::ConstPtr(data_type)));
 }
 
 void cass_user_type_free(CassUserType* user_type) {
-  delete user_type->from();
+  cass::Memory::deallocate(user_type->from());
 }
 
 const CassDataType* cass_user_type_data_type(const CassUserType* user_type) {
@@ -87,7 +87,7 @@ CASS_USER_TYPE_SET(duration,
 CassError cass_user_type_set_string(CassUserType* user_type,
                                     size_t index,
                                     const char* value) {
-  return user_type->set(index, cass::CassString(value, strlen(value)));
+  return user_type->set(index, cass::CassString(value, SAFE_STRLEN(value)));
 }
 
 CassError cass_user_type_set_string_n(CassUserType* user_type,
@@ -101,7 +101,7 @@ CassError cass_user_type_set_string_by_name(CassUserType* user_type,
                                             const char* name,
                                             const char* value) {
   return user_type->set(cass::StringRef(name),
-                        cass::CassString(value, strlen(value)));
+                        cass::CassString(value, SAFE_STRLEN(value)));
 }
 
 CassError cass_user_type_set_string_by_name_n(CassUserType* user_type,

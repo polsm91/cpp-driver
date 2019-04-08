@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -19,33 +19,41 @@
 
 #include "request.hpp"
 #include "constants.hpp"
+#include "map.hpp"
 #include "scoped_ptr.hpp"
-
-#include <map>
-#include <string>
+#include "string.hpp"
 
 namespace cass {
 
 class StartupRequest : public Request {
 public:
-  StartupRequest()
+  StartupRequest(const String& application_name,
+                 const String& application_version,
+                 const String& client_id,
+                 bool no_compact_enabled)
       : Request(CQL_OPCODE_STARTUP)
-      , version_("3.0.0")
-      , compression_("") {}
+      , application_name_(application_name)
+      , application_version_(application_version)
+      , client_id_(client_id)
+      , no_compact_enabled_(no_compact_enabled) { }
 
-  bool encode(size_t reserved, char** output, size_t& size);
-
-  const std::string version() const { return version_; }
-  const std::string compression() const { return compression_; }
+  const String& application_name() const { return application_name_; }
+  const String& application_version() const { return application_version_; }
+  const String& client_id() const { return client_id_; }
+  bool no_compact_enabled() const { return no_compact_enabled_; }
 
 private:
-  int encode(int version, RequestCallback* callback, BufferVec* bufs) const;
+  int encode(ProtocolVersion version,
+             RequestCallback* callback,
+             BufferVec* bufs) const;
 
 private:
-  typedef std::map<std::string, std::string> OptionsMap;
+  typedef Map<String, String> OptionsMap;
 
-  std::string version_;
-  std::string compression_;
+  String application_name_;
+  String application_version_;
+  String client_id_;
+  bool no_compact_enabled_;
 };
 
 } // namespace cass

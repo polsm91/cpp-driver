@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -34,14 +34,12 @@ public:
 
   virtual CassHostDistance distance(const Host::Ptr& host) const;
 
-  virtual QueryPlan* new_query_plan(const std::string& connected_keyspace,
+  virtual QueryPlan* new_query_plan(const String& keyspace,
                                     RequestHandler* request_handler,
                                     const TokenMap* token_map);
 
-  virtual void on_add(const Host::Ptr& host);
-  virtual void on_remove(const Host::Ptr& host);
-  virtual void on_up(const Host::Ptr& host);
-  virtual void on_down(const Host::Ptr& host);
+  virtual void on_host_added(const Host::Ptr& host);
+  virtual void on_host_removed(const Host::Ptr& host);
 
   virtual ListPolicy* new_instance() = 0;
 

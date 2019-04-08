@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -27,8 +27,8 @@
 #include <boost/thread.hpp>
 #include <boost/scoped_ptr.hpp>
 
-struct AthenticationTests {
-  AthenticationTests()
+struct AuthenticationTests {
+  AuthenticationTests()
     : cluster(cass_cluster_new())
     , ccm(new CCM::Bridge("config.txt"))
     , version(test_utils::get_version()) {
@@ -39,7 +39,7 @@ struct AthenticationTests {
     test_utils::initialize_contact_points(cluster.get(), CCM::Bridge::get_ip_prefix("config.txt"), 1);
   }
 
-  ~AthenticationTests() {
+  ~AuthenticationTests() {
     //TODO: Add name generation for simple auth tests
     ccm->remove_cluster();
   }
@@ -77,16 +77,16 @@ struct AthenticationTests {
   CCM::CassVersion version;
 };
 
-BOOST_FIXTURE_TEST_SUITE(authentication, AthenticationTests)
+// Authenticator callback used in AuthenticatorSetErrorNullError test
+void on_auth_initial(CassAuthenticator* auth,
+                     void* data) {
+  cass_authenticator_set_error(auth, NULL);
+}
+
+BOOST_FIXTURE_TEST_SUITE(authentication, AuthenticationTests)
 
 BOOST_AUTO_TEST_CASE(protocol_versions)
 {
-  // Handle deprecated and removed protocol versions [CASSANDRA-10146]
-  // https://issues.apache.org/jira/browse/CASSANDRA-10146
-  if (version < "2.2.0") {
-    auth(1);
-    auth(2);
-  }
   auth(3);
   auth(4);
 }
@@ -106,6 +106,12 @@ BOOST_AUTO_TEST_CASE(empty_credentials)
   }
   invalid_credentials(3, "", "", expected_error, CASS_ERROR_LIB_NO_HOSTS_AVAILABLE);
   invalid_credentials(4, "", "", expected_error, CASS_ERROR_LIB_NO_HOSTS_AVAILABLE);
+  invalid_credentials(3, NULL, "pass", expected_error, CASS_ERROR_LIB_NO_HOSTS_AVAILABLE);
+  invalid_credentials(4, NULL, "pass", expected_error, CASS_ERROR_LIB_NO_HOSTS_AVAILABLE);
+
+  expected_error = "and/or password are incorrect"; // Handle multiple versions of Cassandra and DSE
+  invalid_credentials(3, "user", NULL, expected_error, CASS_ERROR_SERVER_BAD_CREDENTIALS);
+  invalid_credentials(4, "user", NULL, expected_error, CASS_ERROR_SERVER_BAD_CREDENTIALS);
 }
 
 BOOST_AUTO_TEST_CASE(bad_credentials)
@@ -121,6 +127,27 @@ BOOST_AUTO_TEST_CASE(bad_credentials)
     invalid_credentials(2, "invalid", "invalid", expected_error.c_str(), CASS_ERROR_SERVER_BAD_CREDENTIALS);
   }
   invalid_credentials(3, "invalid", "invalid", expected_error.c_str(), CASS_ERROR_SERVER_BAD_CREDENTIALS);
+  invalid_credentials(4, "invalid", "invalid", expected_error.c_str(), CASS_ERROR_SERVER_BAD_CREDENTIALS);
+}
+
+/**
+ * Set authenticator error to NULL
+ *
+ * @jira_ticket CPP-368
+ * @test_category authentication
+ * @since 1.3.0
+ * @expected_result Successfully connect.
+ */
+BOOST_AUTO_TEST_CASE(authenticator_set_error_null_error) {
+  std::string expected_error = "Username and/or password are incorrect";
+  if (version >= "3.10") {
+    expected_error = "Provided username invalid and/or password are incorrect";
+  }
+
+  CassAuthenticatorCallbacks auth_callbacks = {on_auth_initial, NULL, NULL, NULL };
+  BOOST_CHECK_EQUAL(CASS_OK,
+    cass_cluster_set_authenticator_callbacks(cluster.get(),
+                                             &auth_callbacks, NULL, NULL));
   invalid_credentials(4, "invalid", "invalid", expected_error.c_str(), CASS_ERROR_SERVER_BAD_CREDENTIALS);
 }
 

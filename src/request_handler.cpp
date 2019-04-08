@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -18,36 +18,69 @@
 
 #include "batch_request.hpp"
 #include "connection.hpp"
+#include "connection_pool_manager.hpp"
 #include "constants.hpp"
 #include "error_response.hpp"
 #include "execute_request.hpp"
-#include "io_worker.hpp"
-#include "pool.hpp"
+#include "metrics.hpp"
 #include "prepare_request.hpp"
+#include "protocol.hpp"
 #include "response.hpp"
 #include "result_response.hpp"
 #include "row.hpp"
-#include "schema_change_callback.hpp"
 #include "session.hpp"
 
 #include <uv.h>
 
 namespace cass {
 
+class SingleHostQueryPlan : public QueryPlan {
+public:
+  SingleHostQueryPlan(const Address& address)
+    : host_(Memory::allocate<Host>(address)) { }
+
+  virtual Host::Ptr compute_next() {
+    Host::Ptr temp = host_;
+    host_.reset(); // Only return the host once
+    return temp;
+  }
+
+private:
+  Host::Ptr host_;
+};
+
 class PrepareCallback : public SimpleRequestCallback {
 public:
-  PrepareCallback(const std::string& query, SpeculativeExecution* speculative_execution)
-    : SimpleRequestCallback(Request::ConstPtr(new PrepareRequest(query)))
-    , speculative_execution_(speculative_execution) { }
+  PrepareCallback(const String& query, RequestExecution* request_execution);
+
+private:
+  class PrepareRequest : public cass::PrepareRequest {
+  public:
+    PrepareRequest(const String& query,
+                   const String& keyspace,
+                   uint64_t request_timeout_ms)
+      : cass::PrepareRequest(query) {
+      set_keyspace(keyspace);
+      set_request_timeout_ms(request_timeout_ms);
+    }
+  };
 
 private:
   virtual void on_internal_set(ResponseMessage* response);
-  virtual void on_internal_error(CassError code, const std::string& message);
+  virtual void on_internal_error(CassError code, const String& message);
   virtual void on_internal_timeout();
 
 private:
-  SpeculativeExecution::Ptr speculative_execution_;
+  RequestExecution::Ptr request_execution_;
 };
+
+PrepareCallback::PrepareCallback(const String& query, RequestExecution* request_execution)
+  : SimpleRequestCallback(
+      Request::ConstPtr(
+        Memory::allocate<PrepareRequest>(query,
+                                         request_execution->request()->keyspace(),
+                                         request_execution->request_timeout_ms())))
+  , request_execution_(request_execution) { }
 
 void PrepareCallback::on_internal_set(ResponseMessage* response) {
   switch (response->opcode()) {
@@ -55,81 +88,202 @@ void PrepareCallback::on_internal_set(ResponseMessage* response) {
       ResultResponse* result =
           static_cast<ResultResponse*>(response->response_body().get());
       if (result->kind() == CASS_RESULT_KIND_PREPARED) {
-        speculative_execution_->retry_current_host();
+        request_execution_->notify_result_metadata_changed(request(), result);
+        request_execution_->on_retry_current_host();
       } else {
-        speculative_execution_->retry_next_host();
+        request_execution_->on_retry_next_host();
       }
     } break;
     case CQL_OPCODE_ERROR:
-      speculative_execution_->retry_next_host();
+      request_execution_->on_retry_next_host();
       break;
     default:
       break;
   }
 }
 
-void PrepareCallback::on_internal_error(CassError code, const std::string& message) {
-  speculative_execution_->retry_next_host();
+void PrepareCallback::on_internal_error(CassError code, const String& message) {
+  request_execution_->on_retry_next_host();
 }
 
 void PrepareCallback::on_internal_timeout() {
-  speculative_execution_->retry_next_host();
+  request_execution_->on_retry_next_host();
 }
 
-void RequestHandler::add_execution(SpeculativeExecution* speculative_execution) {
+class NopRequestListener : public RequestListener {
+public:
+  virtual void on_prepared_metadata_changed(const String& id,
+                                            const PreparedMetadata::Entry::Ptr& entry) { }
+
+  virtual void on_keyspace_changed(const String& keyspace,
+                                   KeyspaceChangedResponse response) { }
+
+  virtual bool on_wait_for_tracing_data(const RequestHandler::Ptr& request_handler,
+                                        const Host::Ptr& current_host,
+                                        const Response::Ptr& response) {
+    return false;
+  }
+
+  virtual bool on_wait_for_schema_agreement(const RequestHandler::Ptr& request_handler,
+                                            const Host::Ptr& current_host,
+                                            const Response::Ptr& response) {
+    return false;
+  }
+
+  virtual bool on_prepare_all(const RequestHandler::Ptr& request_handler,
+                              const Host::Ptr& current_host,
+                              const Response::Ptr& response) {
+    return false;
+  }
+
+  virtual void on_done() { }
+};
+
+static NopRequestListener nop_request_listener__;
+
+RequestHandler::RequestHandler(const Request::ConstPtr& request,
+                               const ResponseFuture::Ptr& future,
+                               Metrics* metrics,
+                               const Address* preferred_address)
+  : wrapper_(request)
+  , future_(future)
+  , is_done_(false)
+  , running_executions_(0)
+  , start_time_ns_(uv_hrtime())
+  , listener_(&nop_request_listener__)
+  , manager_(NULL)
+  , metrics_(metrics)
+  , preferred_address_(preferred_address != NULL ? *preferred_address : Address()) { }
+
+void RequestHandler::set_prepared_metadata(const PreparedMetadata::Entry::Ptr& entry) {
+  wrapper_.set_prepared_metadata(entry);
+}
+
+void RequestHandler::init(const ExecutionProfile& profile,
+                          ConnectionPoolManager* manager,
+                          const TokenMap* token_map,
+                          TimestampGenerator* timestamp_generator,
+                          RequestListener* listener) {
+  manager_ = manager;
+  listener_ = listener ? listener : &nop_request_listener__;
+  wrapper_.init(profile, timestamp_generator);
+
+  // Attempt to use the statement's keyspace first then if not set then use the session's keyspace
+  const String& keyspace(!request()->keyspace().empty() ? request()->keyspace() : manager_->keyspace());
+
+  // If a specific host is set then bypass the load balancing policy and use a
+  // specialized single host query plan.
+  if (request()->host()) {
+    query_plan_.reset(Memory::allocate<SingleHostQueryPlan>(*request()->host()));
+  } else {
+    query_plan_.reset(profile.load_balancing_policy()->new_query_plan(keyspace, this, token_map));
+  }
+
+  execution_plan_.reset(profile.speculative_execution_policy()->new_plan(keyspace, wrapper_.request().get()));
+}
+
+void RequestHandler::execute() {
+  RequestExecution::Ptr request_execution(Memory::allocate<RequestExecution>(this));
   running_executions_++;
-  speculative_execution->inc_ref();
-  speculative_executions_.push_back(speculative_execution);
+  internal_retry(request_execution.get());
 }
 
-void RequestHandler::add_attempted_address(const Address& address) {
+void RequestHandler::retry(RequestExecution* request_execution, Protected) {
+  internal_retry(request_execution);
+}
+
+void RequestHandler::start_request(uv_loop_t* loop, Protected) {
+  if (!timer_.is_running()) {
+    uint64_t request_timeout_ms = wrapper_.request_timeout_ms();
+    if (request_timeout_ms > 0) { // 0 means no timeout
+      timer_.start(loop, request_timeout_ms,
+                   bind_callback(&RequestHandler::on_timeout, this));
+    }
+  }
+}
+
+Host::Ptr RequestHandler::next_host(Protected) {
+  return query_plan_->compute_next();
+}
+
+int64_t RequestHandler::next_execution(const Host::Ptr& current_host, Protected) {
+  return execution_plan_->next_execution(current_host);
+}
+
+void RequestHandler::add_attempted_address(const Address& address, Protected) {
   future_->add_attempted_address(address);
 }
 
-void RequestHandler::schedule_next_execution(const Host::Ptr& current_host) {
-  int64_t timeout = execution_plan_->next_execution(current_host);
-  if (timeout >= 0) {
-    SpeculativeExecution::Ptr speculative_execution(
-          new SpeculativeExecution(RequestHandler::Ptr(this)));
-    speculative_execution->schedule_next(timeout);
-  }
+void RequestHandler::notify_result_metadata_changed(const String& prepared_id,
+                                                    const String& query,
+                                                    const String& keyspace,
+                                                    const String& result_metadata_id,
+                                                    const ResultResponse::ConstPtr& result_response, Protected) {
+  PreparedMetadata::Entry::Ptr entry(
+        Memory::allocate<PreparedMetadata::Entry>(query,
+                                                  keyspace,
+                                                  result_metadata_id,
+                                                  result_response));
+  listener_->on_prepared_metadata_changed(prepared_id, entry);
 }
 
-void RequestHandler::start_request(IOWorker* io_worker) {
-  io_worker_ = io_worker;
-  uint64_t request_timeout_ms = request_->request_timeout_ms(
-                                  io_worker->config().request_timeout_ms());
-  if (request_timeout_ms > 0) { // 0 means no timeout
-    timer_.start(io_worker->loop(),
-                 request_timeout_ms,
-                 this,
-                 on_timeout);
-  }
+void RequestHandler::notify_keyspace_changed(const String& keyspace,
+                                             const Host::Ptr& current_host,
+                                             const Response::Ptr& response) {
+  listener_->on_keyspace_changed(keyspace,
+                                 KeyspaceChangedResponse(RequestHandler::Ptr(this), current_host, response));
+}
+
+bool RequestHandler::wait_for_tracing_data(const Host::Ptr& current_host,
+                                           const Response::Ptr& response) {
+  return listener_->on_wait_for_tracing_data(Ptr(this), current_host, response);
+}
+
+bool RequestHandler::wait_for_schema_agreement(const Host::Ptr& current_host,
+                                               const Response::Ptr& response) {
+  return listener_->on_wait_for_schema_agreement(Ptr(this), current_host, response);
+}
+
+bool RequestHandler::prepare_all(const Host::Ptr& current_host,
+                                 const Response::Ptr& response) {
+  return listener_->on_prepare_all(Ptr(this), current_host, response);
 }
 
 void RequestHandler::set_response(const Host::Ptr& host,
                                   const Response::Ptr& response) {
+  stop_request();
+  running_executions_--;
+
   if (future_->set_response(host->address(), response)) {
-    io_worker_->metrics()->record_request(uv_hrtime() - start_time_ns_);
-    stop_request();
+    if (metrics_) {
+      metrics_->record_request(uv_hrtime() - start_time_ns_);
+    }
+  } else {
+    // This request is a speculative execution for whom we already processed
+    // a response (another speculative execution). So consider this one an
+    // aborted speculative execution.
+    if (metrics_) {
+      metrics_->record_speculative_request(uv_hrtime() - start_time_ns_);
+    }
   }
 }
 
 void RequestHandler::set_error(CassError code,
-                               const std::string& message) {
-  if (future_->set_error(code, message)) {
-    stop_request();
+                               const String& message) {
+  stop_request();
+  bool skip = (code == CASS_ERROR_LIB_NO_HOSTS_AVAILABLE && --running_executions_ > 0);
+  if (!skip) {
+    future_->set_error(code, message);
   }
 }
 
 void RequestHandler::set_error(const Host::Ptr& host,
-                               CassError code, const std::string& message) {
+                               CassError code, const String& message) {
+  stop_request();
   bool skip = (code == CASS_ERROR_LIB_NO_HOSTS_AVAILABLE && --running_executions_ > 0);
   if (!skip) {
     if (host) {
-      if (future_->set_error_with_address(host->address(), code, message)) {
-        stop_request();
-      }
+      future_->set_error_with_address(host->address(), code, message);
     } else {
       set_error(code, message);
     }
@@ -138,82 +292,129 @@ void RequestHandler::set_error(const Host::Ptr& host,
 
 void RequestHandler::set_error_with_error_response(const Host::Ptr& host,
                                                    const Response::Ptr& error,
-                                                   CassError code, const std::string& message) {
-  if (future_->set_error_with_response(host->address(), error, code, message)) {
-    stop_request();
-  }
+                                                   CassError code, const String& message) {
+  stop_request();
+  running_executions_--;
+  future_->set_error_with_response(host->address(), error, code, message);
+}
+
+void RequestHandler::stop_timer() {
+  timer_.stop();
 }
 
 void RequestHandler::on_timeout(Timer* timer) {
-  RequestHandler* request_handler =
-      static_cast<RequestHandler*>(timer->data());
-  request_handler->io_worker_->metrics()->request_timeouts.inc();
-  request_handler->set_error(CASS_ERROR_LIB_REQUEST_TIMED_OUT,
-                             "Request timed out");
+  if (metrics_) {
+    metrics_->request_timeouts.inc();
+  }
+  set_error(CASS_ERROR_LIB_REQUEST_TIMED_OUT, "Request timed out");
   LOG_DEBUG("Request timed out");
 }
 
 void RequestHandler::stop_request() {
+  if (!is_done_) {
+    listener_->on_done();
+    is_done_ = true;
+  }
   timer_.stop();
-  for (SpeculativeExecutionVec::const_iterator i = speculative_executions_.begin(),
-       end = speculative_executions_.end(); i != end; ++i) {
-    SpeculativeExecution* speculative_execution = *i;
-    speculative_execution->cancel();
-    speculative_execution->dec_ref();
+}
+
+void RequestHandler::internal_retry(RequestExecution* request_execution) {
+  if (is_done_) {
+    LOG_DEBUG("Canceling speculative execution (%p) for request (%p) on host %s",
+              static_cast<void*>(request_execution),
+              static_cast<void*>(this),
+              request_execution->current_host() ? request_execution->current_host()->address_string().c_str()
+                                                : "<no current host>");
+    return;
   }
-  if (io_worker_ != NULL) {
-    io_worker_->request_finished();
+
+  bool is_successful = false;
+  while (request_execution->current_host()) {
+    PooledConnection::Ptr connection = manager_->find_least_busy(request_execution->current_host()->address());
+    if (connection && connection->write(request_execution)) {
+      is_successful = true;
+      break;
+    }
+    request_execution->next_host();
+  }
+
+  if (!is_successful) {
+    set_error(CASS_ERROR_LIB_NO_HOSTS_AVAILABLE,
+              "All hosts in current policy attempted "
+              "and were either unavailable or failed");
   }
 }
 
-SpeculativeExecution::SpeculativeExecution(const RequestHandler::Ptr& request_handler,
-                                           const Host::Ptr& current_host)
-  : RequestCallback()
+RequestExecution::RequestExecution(RequestHandler* request_handler)
+  : RequestCallback(request_handler->wrapper())
   , request_handler_(request_handler)
-  , current_host_(current_host)
-  , pool_(NULL)
+  , current_host_(request_handler->next_host(RequestHandler::Protected()))
   , num_retries_(0)
-  , start_time_ns_(0) {
-  request_handler_->add_execution(this);
+  , start_time_ns_(uv_hrtime()) { }
+
+void RequestExecution::on_execute_next(Timer* timer) {
+  request_handler_->execute();
 }
 
-void SpeculativeExecution::on_execute(Timer* timer) {
-  SpeculativeExecution* speculative_execution = static_cast<SpeculativeExecution*>(timer->data());
-  speculative_execution->next_host();
-  speculative_execution->execute();
+void RequestExecution::on_retry_current_host() {
+  retry_current_host();
 }
 
-void SpeculativeExecution::on_start() {
+void RequestExecution::on_retry_next_host() {
+  retry_next_host();
+}
+
+void RequestExecution::retry_current_host() {
+  // Reset the request so it can be executed again
+  set_state(REQUEST_STATE_NEW);
+
+  request_handler_->retry(this, RequestHandler::Protected());
+}
+
+void RequestExecution::retry_next_host() {
+  next_host();
+  retry_current_host();
+}
+
+void RequestExecution::on_write(Connection* connection) {
   assert(current_host_ && "Tried to start on a non-existent host");
+  connection_ = connection;
   if (request()->record_attempted_addresses()) {
-    request_handler_->add_attempted_address(current_host_->address());
+    request_handler_->add_attempted_address(current_host_->address(), RequestHandler::Protected());
   }
-  start_time_ns_ = uv_hrtime();
+  request_handler_->start_request(connection->loop(), RequestHandler::Protected());
+  if (request()->is_idempotent()) {
+    int64_t timeout = request_handler_->next_execution(current_host_, RequestHandler::Protected());
+    if (timeout == 0) {
+      request_handler_->execute();
+    } else if (timeout > 0) {
+      schedule_timer_.start(connection->loop(), timeout,
+                            bind_callback(&RequestExecution::on_execute_next, this));
+    }
+  }
 }
 
-void SpeculativeExecution::on_set(ResponseMessage* response) {
-  assert(connection() != NULL);
+void RequestExecution::on_set(ResponseMessage* response) {
+  assert(connection_ != NULL);
   assert(current_host_ && "Tried to set on a non-existent host");
 
-  return_connection();
+  Connection* connection = connection_;
 
   switch (response->opcode()) {
     case CQL_OPCODE_RESULT:
-      on_result_response(response);
+      on_result_response(connection, response);
       break;
     case CQL_OPCODE_ERROR:
-      on_error_response(response);
+      on_error_response(connection, response);
       break;
     default:
-      connection()->defunct();
+      connection->defunct();
       set_error(CASS_ERROR_LIB_UNEXPECTED_RESPONSE, "Unexpected response");
       break;
   }
 }
 
-void SpeculativeExecution::on_error(CassError code, const std::string& message) {
-  return_connection();
-
+void RequestExecution::on_error(CassError code, const String& message) {
   // Handle recoverable errors by retrying with the next host
   if (code == CASS_ERROR_LIB_WRITE_ERROR ||
       code == CASS_ERROR_LIB_UNABLE_TO_SET_KEYSPACE) {
@@ -223,73 +424,40 @@ void SpeculativeExecution::on_error(CassError code, const std::string& message) 
   }
 }
 
-void SpeculativeExecution::on_retry(bool use_next_host) {
-  return_connection();
-
-  if (use_next_host) {
-    retry_next_host();
+void RequestExecution::notify_result_metadata_changed(const Request* request,
+                                                      ResultResponse* result_response) {
+  // Attempt to use the per-query keyspace first (v5+/DSEv2+ only) then
+  // the keyspace in the result metadata.
+  String keyspace;
+  if (result_response->protocol_version().supports_set_keyspace() &&
+      !request->keyspace().empty()) {
+    keyspace = request->keyspace();
   } else {
-    retry_current_host();
-  }
-}
-
-void SpeculativeExecution::on_cancel() {
-  LOG_DEBUG("Cancelling speculative execution (%p) for request (%p) on host %s",
-            static_cast<void*>(this),
-            static_cast<void*>(request_handler_.get()),
-            current_host_ ? current_host_->address_string().c_str()
-                          : "<no current host>");
-  return_connection();
-}
-
-void SpeculativeExecution::retry_current_host() {
-  if (state() == REQUEST_STATE_CANCELLED) {
-    return;
+    keyspace = result_response->keyspace().to_string();
   }
 
-  // Reset the request so it can be executed again
-  set_state(REQUEST_STATE_NEW);
-  pool_ = NULL;
-  request_handler_->io_worker()->retry(RequestCallback::Ptr(this));
-}
-
-void SpeculativeExecution::retry_next_host() {
-  next_host();
-  retry_current_host();
-}
-
-void SpeculativeExecution::start_pending_request(Pool* pool, Timer::Callback cb) {
-  pool_ = pool;
-  pending_request_timer_.start(pool->loop(), pool->config().connect_timeout_ms(), this, cb);
-}
-
-void SpeculativeExecution::stop_pending_request() {
-  pending_request_timer_.stop();
-}
-
-void SpeculativeExecution::execute() {
-  if (request()->is_idempotent()) {
-    request_handler_->schedule_next_execution(current_host_);
-  }
-  request_handler_->io_worker()->retry(RequestCallback::Ptr(this));
-
-}
-
-void SpeculativeExecution::schedule_next(int64_t timeout) {
-  if (timeout > 0) {
-    schedule_timer_.start(request_handler_->io_worker()->loop(), timeout, this, on_execute);
+  if (request->opcode() == CQL_OPCODE_EXECUTE &&
+      result_response->kind() == CASS_RESULT_KIND_ROWS) {
+    const ExecuteRequest* execute = static_cast<const ExecuteRequest*>(request);
+    request_handler_->notify_result_metadata_changed(execute->prepared()->id(),
+                                                     execute->prepared()->query(),
+                                                     keyspace,
+                                                     result_response->new_metadata_id().to_string(),
+                                                     ResultResponse::ConstPtr(result_response), RequestHandler::Protected());
+  } else if (request->opcode()  == CQL_OPCODE_PREPARE &&
+             result_response->kind() == CASS_RESULT_KIND_PREPARED) {
+    const PrepareRequest* prepare = static_cast<const PrepareRequest*>(request);
+    request_handler_->notify_result_metadata_changed(result_response->prepared_id().to_string(),
+                                                     prepare->query(),
+                                                     keyspace,
+                                                     result_response->result_metadata_id().to_string(),
+                                                     ResultResponse::ConstPtr(result_response), RequestHandler::Protected());
   } else {
-    next_host();
-    execute();
+    assert (false && "Invalid response type for a result metadata change");
   }
 }
 
-void SpeculativeExecution::cancel() {
-  schedule_timer_.stop();
-  set_state(REQUEST_STATE_CANCELLED);
-}
-
-void SpeculativeExecution::on_result_response(ResponseMessage* response) {
+void RequestExecution::on_result_response(Connection* connection, ResponseMessage* response) {
   ResultResponse* result =
       static_cast<ResultResponse*>(response->response_body().get());
 
@@ -299,31 +467,48 @@ void SpeculativeExecution::on_result_response(ResponseMessage* response) {
 
       // Execute statements with no metadata get their metadata from
       // result_metadata() returned when the statement was prepared.
-      if (request()->opcode() == CQL_OPCODE_EXECUTE && result->no_metadata()) {
-        const ExecuteRequest* execute = static_cast<const ExecuteRequest*>(request());
-        if (!execute->skip_metadata()) {
-          // Caused by a race condition in C* 2.1.0
-          on_error(CASS_ERROR_LIB_UNEXPECTED_RESPONSE,
-                   "Expected metadata but no metadata in response (see CASSANDRA-8054)");
-          return;
+      if (request()->opcode() == CQL_OPCODE_EXECUTE) {
+        if (result->no_metadata()) {
+          if (!skip_metadata()) {
+            // Caused by a race condition in C* 2.1.0
+            on_error(CASS_ERROR_LIB_UNEXPECTED_RESPONSE,
+                     "Expected metadata but no metadata in response (see CASSANDRA-8054)");
+            return;
+          }
+          result->set_metadata(prepared_metadata_entry()->result()->result_metadata());
+        } else if (result->metadata_changed()) {
+          notify_result_metadata_changed(request(), result);
         }
-        result->set_metadata(execute->prepared()->result()->result_metadata().get());
       }
-      set_response(response->response_body());
+
+      if (!response->response_body()->has_tracing_id() ||
+          !request_handler_->wait_for_tracing_data(current_host(),
+                                                   response->response_body())) {
+        set_response(response->response_body());
+      }
       break;
 
     case CASS_RESULT_KIND_SCHEMA_CHANGE: {
-      SchemaChangeCallback::Ptr schema_change_handler(
-            new SchemaChangeCallback(connection(),
-                                     Ptr(this),
-                                     response->response_body()));
-      schema_change_handler->execute();
+      if (!request_handler_->wait_for_schema_agreement(current_host(),
+                                                       response->response_body())) {
+        set_response(response->response_body());
+      }
       break;
     }
 
     case CASS_RESULT_KIND_SET_KEYSPACE:
-      request_handler_->io_worker()->broadcast_keyspace_change(result->keyspace().to_string());
-      set_response(response->response_body());
+      // The response is set after the keyspace is propagated to all threads.
+      request_handler_->notify_keyspace_changed(result->keyspace().to_string(),
+                                                current_host_,
+                                                response->response_body());
+      break;
+
+    case CASS_RESULT_KIND_PREPARED:
+      notify_result_metadata_changed(request(), result);
+      if (!request_handler_->prepare_all(current_host(),
+                                         response->response_body())) {
+        set_response(response->response_body());
+      }
       break;
 
     default:
@@ -332,74 +517,77 @@ void SpeculativeExecution::on_result_response(ResponseMessage* response) {
   }
 }
 
-void SpeculativeExecution::on_error_response(ResponseMessage* response) {
+void RequestExecution::on_error_response(Connection* connection, ResponseMessage* response) {
   ErrorResponse* error =
       static_cast<ErrorResponse*>(response->response_body().get());
 
   RetryPolicy::RetryDecision decision = RetryPolicy::RetryDecision::return_error();
 
-
   switch(error->code()) {
     case CQL_ERROR_READ_TIMEOUT:
-      decision =  request_handler_->retry_policy()->on_read_timeout(request(),
-                                                                    error->consistency(),
-                                                                    error->received(),
-                                                                    error->required(),
-                                                                    error->data_present() > 0,
-                                                                    num_retries_);
+      if (retry_policy()) {
+        decision =  retry_policy()->on_read_timeout(request(),
+                                                    error->consistency(),
+                                                    error->received(),
+                                                    error->required(),
+                                                    error->data_present() > 0,
+                                                    num_retries_);
+      }
       break;
 
     case CQL_ERROR_WRITE_TIMEOUT:
-      if (request()->is_idempotent()) {
-        decision =  request_handler_->retry_policy()->on_write_timeout(request(),
-                                                                       error->consistency(),
-                                                                       error->received(),
-                                                                       error->required(),
-                                                                       error->write_type(),
-                                                                       num_retries_);
+      if (retry_policy() && request()->is_idempotent()) {
+        decision = retry_policy()->on_write_timeout(request(),
+                                                    error->consistency(),
+                                                    error->received(),
+                                                    error->required(),
+                                                    error->write_type(),
+                                                    num_retries_);
       }
       break;
 
     case CQL_ERROR_UNAVAILABLE:
-      decision =  request_handler_->retry_policy()->on_unavailable(request(),
-                                                                   error->consistency(),
-                                                                   error->required(),
-                                                                   error->received(),
-                                                                   num_retries_);
+      if (retry_policy()) {
+        decision =  retry_policy()->on_unavailable(request(),
+                                                   error->consistency(),
+                                                   error->required(),
+                                                   error->received(),
+                                                   num_retries_);
+      }
       break;
 
     case CQL_ERROR_OVERLOADED:
       LOG_WARN("Host %s is overloaded.",
-               connection()->address_string().c_str());
-      if (request()->is_idempotent()) {
-        decision = request_handler_->retry_policy()->on_request_error(request(),
-                                                                      request()->consistency(),
-                                                                      error,
-                                                                      num_retries_);
+               connection->address_string().c_str());
+      if (retry_policy() && request()->is_idempotent()) {
+        decision = retry_policy()->on_request_error(request(),
+                                                    consistency(),
+                                                    error,
+                                                    num_retries_);
       }
       break;
 
     case CQL_ERROR_SERVER_ERROR:
       LOG_WARN("Received server error '%s' from host %s. Defuncting the connection...",
                error->message().to_string().c_str(),
-               connection()->address_string().c_str());
-      connection()->defunct();
-      if (request()->is_idempotent()) {
-        decision = request_handler_->retry_policy()->on_request_error(request(),
-                                                                      request()->consistency(),
-                                                                      error,
-                                                                      num_retries_);
+               connection->address_string().c_str());
+      connection->defunct();
+      if (retry_policy() && request()->is_idempotent()) {
+        decision = retry_policy()->on_request_error(request(),
+                                                    consistency(),
+                                                    error,
+                                                    num_retries_);
       }
       break;
 
     case CQL_ERROR_IS_BOOTSTRAPPING:
       LOG_ERROR("Query sent to bootstrapping host %s. Retrying on the next host...",
-                connection()->address_string().c_str());
+                connection->address_string().c_str());
       retry_next_host();
       return; // Done
 
     case CQL_ERROR_UNPREPARED:
-      on_error_unprepared(error);
+      on_error_unprepared(connection, error);
       return; // Done
 
     default:
@@ -417,7 +605,7 @@ void SpeculativeExecution::on_error_response(ResponseMessage* response) {
       break;
 
     case RetryPolicy::RetryDecision::RETRY:
-      set_consistency(decision.retry_consistency());
+      set_retry_consistency(decision.retry_consistency());
       if (decision.retry_current_host()) {
         retry_current_host();
       } else {
@@ -427,59 +615,49 @@ void SpeculativeExecution::on_error_response(ResponseMessage* response) {
       break;
 
     case RetryPolicy::RetryDecision::IGNORE:
-      set_response(Response::Ptr(new ResultResponse()));
+      set_response(Response::Ptr(Memory::allocate<ResultResponse>()));
       break;
   }
 }
 
-void SpeculativeExecution::on_error_unprepared(ErrorResponse* error) {
-  std::string prepared_statement;
+void RequestExecution::on_error_unprepared(Connection* connection, ErrorResponse* error) {
+  String query;
 
   if (request()->opcode() == CQL_OPCODE_EXECUTE) {
     const ExecuteRequest* execute = static_cast<const ExecuteRequest*>(request());
-    prepared_statement = execute->prepared()->statement();
+    query = execute->prepared()->query();
   } else if (request()->opcode() == CQL_OPCODE_BATCH) {
     const BatchRequest* batch = static_cast<const BatchRequest*>(request());
-    if (!batch->prepared_statement(error->prepared_id().to_string(), &prepared_statement)) {
+    if (!batch->find_prepared_query(error->prepared_id().to_string(), &query)) {
       set_error(CASS_ERROR_LIB_UNEXPECTED_RESPONSE,
                 "Unable to find prepared statement in batch statement");
       return;
     }
   } else {
-    connection()->defunct();
+    connection->defunct();
     set_error(CASS_ERROR_LIB_UNEXPECTED_RESPONSE,
               "Received unprepared error for invalid "
               "request type or invalid prepared id");
     return;
   }
 
-  if (!connection()->write(RequestCallback::Ptr(
-                            new PrepareCallback(prepared_statement, this)))) {
+  if (!connection->write_and_flush(RequestCallback::Ptr(
+                                     Memory::allocate<PrepareCallback>(query, this)))) {
     // Try to prepare on the same host but on a different connection
     retry_current_host();
   }
 }
 
-void SpeculativeExecution::return_connection() {
-  if (pool_ != NULL && connection() != NULL) {
-    pool_->return_connection(connection());
-  }
-}
-
-bool SpeculativeExecution::is_host_up(const Address& address) const {
-  return request_handler_->io_worker()->is_host_up(address);
-}
-
-void SpeculativeExecution::set_response(const Response::Ptr& response) {
+void RequestExecution::set_response(const Response::Ptr& response) {
   request_handler_->set_response(current_host_, response);
 }
 
-void SpeculativeExecution::set_error(CassError code, const std::string& message) {
+void RequestExecution::set_error(CassError code, const String& message) {
   request_handler_->set_error(current_host_, code, message);
 }
 
-void SpeculativeExecution::set_error_with_error_response(const Response::Ptr& error,
-                                                         CassError code, const std::string& message) {
+void RequestExecution::set_error_with_error_response(const Response::Ptr& error,
+                                                     CassError code, const String& message) {
   request_handler_->set_error_with_error_response(current_host_, error, code, message);
 }
 

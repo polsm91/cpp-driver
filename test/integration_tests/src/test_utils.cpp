@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -246,11 +246,28 @@ MultipleNodesTest::MultipleNodesTest(unsigned int num_nodes_dc1,
   cass_cluster_set_max_concurrent_creation(cluster, 8);
   if (version.major_version >= 3 && version.minor_version >= 10 &&
       protocol_version == CASS_HIGHEST_SUPPORTED_PROTOCOL_VERSION) {
-    cass_cluster_set_use_beta_protocol_version(cluster, cass_true);
+    cass_cluster_set_use_beta_protocol_version(cluster,
+                                               is_beta_protocol() ? cass_true : cass_false);
   } else {
     cass_cluster_set_protocol_version(cluster, protocol_version);
   }
   cass_cluster_set_use_randomized_contact_points(cluster, cass_false);
+}
+
+bool MultipleNodesTest::check_version(const std::string& required) {
+  if (version >= required) return true;
+  BOOST_TEST_MESSAGE("Cassandra version " << required << " required for this test");
+  return false;
+}
+
+bool MultipleNodesTest::is_beta_protocol() {
+  std::string value;
+  char* temp = getenv("BETA_PROTOCOL");
+  if (temp) {
+    value.assign(temp);
+    std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+  }
+  return !value.empty() && value != "0" && value != "false";
 }
 
 MultipleNodesTest::~MultipleNodesTest() {
@@ -259,7 +276,7 @@ MultipleNodesTest::~MultipleNodesTest() {
 }
 
 SingleSessionTest::SingleSessionTest(unsigned int num_nodes_dc1,
-  unsigned int num_nodes_dc2, bool with_session /* = true */,
+                                     unsigned int num_nodes_dc2, bool with_session /* = true */,
   unsigned int protocol_version, bool with_vnodes /* = false */,
   bool is_ssl /* = false */)
   : MultipleNodesTest(num_nodes_dc1, num_nodes_dc2, protocol_version,
@@ -485,6 +502,29 @@ void wait_for_node_connections(const std::string& ip_prefix, std::vector<int> no
   while (num_of_attempts < total_attempts && test_utils::CassLog::message_count() < nodes.size()) {
     boost::this_thread::sleep_for(boost::chrono::seconds(1));
     ++num_of_attempts;
+  }
+}
+
+std::string& trim(std::string& str) {
+  // Trim front
+  str.erase(str.begin(),
+            std::find_if(str.begin(), str.end(),
+                         std::not1(std::ptr_fun<int, int>(::isspace))));
+  // Trim back
+  str.erase(std::find_if(str.rbegin(), str.rend(),
+                         std::not1(std::ptr_fun<int, int>(::isspace))).base(),
+            str.end());
+  return str;
+}
+
+void explode(const std::string& str, std::vector<std::string>& vec, const char delimiter) {
+  std::istringstream stream(str);
+  while (!stream.eof()) {
+    std::string token;
+    std::getline(stream, token, delimiter);
+    if (!trim(token).empty()) {
+      vec.push_back(token);
+    }
   }
 }
 

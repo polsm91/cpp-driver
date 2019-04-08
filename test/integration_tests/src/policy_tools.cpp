@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -138,7 +138,7 @@ void PolicyTool::query(CassSession* session, int n, CassConsistency cl)
     cass_statement_set_consistency(statement.get(), cl);
     test_utils::CassFuturePtr future(cass_session_execute(session, statement.get()));
     test_utils::wait_and_check_error(future.get());
-    add_coordinator(cass::get_host_from_future(future.get()));
+    add_coordinator(cass::get_host_from_future(future.get()).c_str());
   }
 }
 
@@ -155,7 +155,7 @@ CassError PolicyTool::query_return_error(CassSession* session, int n, CassConsis
     if (rc != CASS_OK) {
       return rc;
     }
-    add_coordinator(cass::get_host_from_future(future.get()));
+    add_coordinator(cass::get_host_from_future(future.get()).c_str());
   }
   return CASS_OK;
 }

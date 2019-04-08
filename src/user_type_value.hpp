@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 #include "cassandra.h"
 #include "data_type.hpp"
 #include "external.hpp"
+#include "memory.hpp"
 #include "ref_counted.hpp"
 
 namespace cass {

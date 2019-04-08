@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2014-2016 DataStax
+  Copyright (c) DataStax, Inc.
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ public:
       : Request(CQL_OPCODE_OPTIONS) {}
 
 private:
-  int encode(int version, RequestCallback* callback, BufferVec* bufs) const { return 0; }
+  int encode(ProtocolVersion version, RequestCallback* callback, BufferVec* bufs) const { return 0; }
 };
 
 } // namespace cass
